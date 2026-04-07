@@ -1,0 +1,14 @@
+# LLM API
+openai>=1.0.0
+
+# 环境变量管理
+python-dotenv>=1.0.0
+
+# CLI 美化
+rich>=13.0.0
+
+# Web UI（可选）
+streamlit>=1.28.0
+
+# Token 计数（可选，用于精确计算）
+tiktoken>=0.5.0

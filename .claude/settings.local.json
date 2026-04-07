@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(unzip -p \"@AI知识库助手_项目执行文档.docx\" word/document.xml)",
+      "Bash(unzip -p \"AI知识库助手_项目执行文档.docx\" word/document.xml)",
+      "Bash(sed 's/<[^\\\\u003e]*>//g')",
+      "Bash(python -m py_compile config.py main.py chat/session.py chat/__init__.py)",
+      "Bash(python -m py_compile config.py)",
+      "Bash(python -m py_compile main.py)",
+      "Bash(python -m py_compile chat/session.py)",
+      "Bash(python:*)",
+      "Bash(pip list:*)",
+      "Bash(echo \"exit code: $?\")",
+      "Bash(pip install:*)"
+    ]
+  }
+}
