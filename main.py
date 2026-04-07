@@ -125,6 +125,8 @@ def print_help():
   /system <prompt>   切换系统提示词（角色）
   /clear             清空对话历史
   /save [name]       保存对话到 data/history/
+  /history           查看历史对话列表
+  /load <文件名>     加载历史对话
   /stats             显示对话统计信息
   /model             显示当前模型信息
   exit / quit        退出程序
@@ -165,6 +167,120 @@ def print_stats(session: ChatSession):
         console.print(Panel(stats_text, title="Statistics", border_style="yellow"))
     else:
         print(stats_text)
+
+
+def print_history_list():
+    """
+    打印历史对话列表
+
+    显示最近保存的对话文件，供用户选择加载
+    """
+    # 调用类方法获取历史文件列表
+    # 不需要实例，直接用类名调用
+    history_files = ChatSession.list_history_files(limit=10)
+
+    # 如果没有历史文件
+    if not history_files:
+        print("\n📂 暂无历史对话")
+        print("提示: 使用 /save 命令保存当前对话")
+        return
+
+    # 构建显示文本
+    lines = ["\n📂 历史对话列表（最近 10 个）:", ""]
+
+    # enumerate() 返回索引和值，start=1 让索引从 1 开始
+    for idx, file_info in enumerate(history_files, start=1):
+        # 格式化文件大小
+        size = file_info['size']
+        if size < 1024:
+            size_str = f"{size}B"
+        elif size < 1024 * 1024:
+            size_str = f"{size / 1024:.1f}KB"
+        else:
+            size_str = f"{size / (1024 * 1024):.1f}MB"
+
+        # 添加文件信息行
+        lines.append(f"  {idx}. {file_info['filename']}")
+        lines.append(f"     修改时间: {file_info['modified_time']} | 大小: {size_str}")
+        lines.append("")
+
+    # 添加使用提示
+    lines.append("💡 使用 /load <文件名> 加载对话")
+    lines.append("   例如: /load chat_20240101_120000.json")
+
+    # 输出
+    text = '\n'.join(lines)
+    if USE_RICH:
+        console.print(Panel(text, title="History", border_style="cyan"))
+    else:
+        print(text)
+
+
+def ask_load_history(session: ChatSession):
+    """
+    启动时询问是否加载历史对话
+
+    如果有历史文件，显示列表并询问用户是否加载
+
+    Args:
+        session: ChatSession 实例，用于加载历史
+
+    Returns:
+        bool: 是否成功加载了历史
+    """
+    # 获取历史文件列表（只取最新的 5 个）
+    history_files = ChatSession.list_history_files(limit=5)
+
+    # 如果没有历史文件，直接返回
+    if not history_files:
+        return False
+
+    # 显示发现的历史文件
+    print(f"\n💾 发现 {len(history_files)} 个历史对话:")
+    for idx, file_info in enumerate(history_files[:3], start=1):  # 只显示前 3 个
+        print(f"  {idx}. {file_info['filename']} ({file_info['modified_time']})")
+
+    # 询问用户
+    if len(history_files) > 3:
+        print(f"  ... 还有 {len(history_files) - 3} 个")
+
+    print("\n是否加载历史对话?")
+    print("  1-N: 加载对应编号的对话")
+    print("  a: 查看全部列表 (/history)")
+    print("  回车: 不加载，开始新对话")
+
+    try:
+        # 获取用户选择
+        choice = input("> ").strip()
+
+        # 如果用户直接回车，不加载
+        if not choice:
+            print("→ 开始新对话")
+            return False
+
+        # 如果输入 'a'，显示完整列表
+        if choice.lower() == 'a':
+            print_history_list()
+            return False
+
+        # 尝试解析为数字
+        try:
+            idx = int(choice)
+            if 1 <= idx <= len(history_files):
+                # 加载选中的文件
+                selected_file = history_files[idx - 1]  # 列表索引从 0 开始
+                return session.load_from_json(selected_file['path'])
+            else:
+                print(f"⚠ 请输入 1-{len(history_files)} 之间的数字")
+                return False
+        except ValueError:
+            # 不是数字，可能是文件名
+            return session.load_from_json(choice)
+
+    except (KeyboardInterrupt, EOFError):
+        # 用户按 Ctrl+C 或 Ctrl+D
+        print("\n→ 开始新对话")
+        return False
 
 
 # ============================================
@@ -218,6 +334,10 @@ def main():
     # ----------------------------------------
 
     print_banner()
+
+    # 启动时询问是否加载历史对话
+    # 这会检查是否有保存的历史文件，并询问用户是否加载
+    ask_load_history(session)
 
     # ----------------------------------------
     # 步骤 4: 主循环
@@ -325,6 +445,26 @@ def main():
                 json_path = session.export_to_json(
                     filepath.replace('.md', '.json') if filepath else None
                 )
+                continue
+
+            # 检查是否为 /history 命令（查看历史列表）
+            if user_input == '/history':
+                # 调用函数显示历史文件列表
+                print_history_list()
+                continue
+
+            # 检查是否为 /load 命令（加载历史对话）
+            if user_input.startswith('/load '):
+                # 提取文件名参数
+                parts = user_input.split(maxsplit=1)
+
+                if len(parts) > 1:
+                    filename = parts[1]
+                    # 调用 session 的加载方法
+                    # 如果成功，messages 会被替换为文件中的内容
+                    session.load_from_json(filename)
+                else:
+                    print("⚠ 请提供文件名，例如: /load chat_20240101_120000.json")
                 continue
 
             # 检查是否为其他以 / 开头的未知命令

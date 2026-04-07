@@ -644,3 +644,143 @@ class ChatSession:
             'model': self.model,
             'provider': Config.LLM_PROVIDER
         }
+
+    @classmethod
+    def list_history_files(cls, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        列出保存的历史对话文件
+
+        类方法，不需要创建实例就可以调用
+        用于在启动时显示可加载的历史对话列表
+
+        Args:
+            limit: 最多返回多少个文件，默认 10 个
+
+        Returns:
+            包含文件信息的字典列表，每个字典有：
+            - filename: 文件名
+            - path: 完整路径
+            - modified_time: 修改时间（字符串）
+            - size: 文件大小（字节）
+        """
+        # 确保历史目录存在
+        # exists() 检查路径是否存在
+        if not Config.HISTORY_DIR.exists():
+            # 如果不存在，返回空列表
+            return []
+
+        # 获取目录中所有 .json 文件
+        # glob() 方法使用通配符匹配文件，*.json 匹配所有 json 文件
+        # 返回的是生成器，用 list() 转换为列表
+        json_files = list(Config.HISTORY_DIR.glob('*.json'))
+
+        # 如果没有文件，返回空列表
+        if not json_files:
+            return []
+
+        # 按修改时间排序（最新的在前面）
+        # key 参数指定排序依据，lambda 是匿名函数
+        # p.stat().st_mtime 获取文件的最后修改时间
+        # reverse=True 表示降序排列（最新的在前）
+        json_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        # 只取前 limit 个文件
+        json_files = json_files[:limit]
+
+        # 构建返回的文件信息列表
+        result = []
+        for filepath in json_files:
+            # 获取文件统计信息
+            stat = filepath.stat()
+
+            # 将修改时间戳转换为可读格式
+            # datetime.fromtimestamp() 将时间戳转为 datetime 对象
+            modified_time = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+
+            # 构建文件信息字典
+            result.append({
+                'filename': filepath.name,           # 文件名（含扩展名）
+                'path': str(filepath),               # 完整路径（字符串）
+                'modified_time': modified_time,      # 格式化后的修改时间
+                'size': stat.st_size                 # 文件大小（字节）
+            })
+
+        return result
+
+    def load_from_json(self, filepath: str) -> bool:
+        """
+        从 JSON 文件加载对话历史
+
+        加载后，当前 messages 列表会被文件中的内容完全替换
+        这样可以继续之前的对话
+
+        Args:
+            filepath: JSON 文件路径，可以是相对路径或绝对路径
+                     如果只提供文件名，会在 data/history/ 目录下查找
+
+        Returns:
+            加载成功返回 True，失败返回 False
+        """
+        # 将路径转换为 Path 对象
+        path = Path(filepath)
+
+        # 如果路径不是绝对路径（即只是文件名），在历史目录下查找
+        # is_absolute() 检查路径是否是绝对路径
+        if not path.is_absolute():
+            path = Config.HISTORY_DIR / path
+
+        # 检查文件是否存在
+        # not 运算符取反，如果不存在则执行
+        if not path.exists():
+            print(f"⚠ 文件不存在: {filepath}")
+            return False
+
+        # 检查是否是文件（不是目录）
+        if not path.is_file():
+            print(f"⚠ 路径不是文件: {filepath}")
+            return False
+
+        try:
+            # 使用 with 语句打开文件
+            # 'r' 模式表示读取
+            with open(path, 'r', encoding='utf-8') as f:
+                # json.load() 从文件读取 JSON 并解析为 Python 对象
+                data = json.load(f)
+
+            # 检查数据结构是否符合预期
+            # 'messages' 键必须存在，且必须是列表
+            if 'messages' not in data or not isinstance(data['messages'], list):
+                print(f"⚠ 文件格式错误：缺少 messages 字段或类型不正确")
+                return False
+
+            # 替换当前的消息列表
+            # 使用 .copy() 创建副本，避免修改原始数据影响文件
+            self.messages = data['messages'].copy()
+
+            # 更新 system_prompt（如果第一条是 system 消息）
+            if self.messages and self.messages[0]['role'] == 'system':
+                self.system_prompt = self.messages[0]['content']
+
+            # 获取元数据信息（用于显示）
+            metadata = data.get('metadata', {})  # .get() 如果键不存在返回空字典
+            saved_model = metadata.get('model', '未知')
+            saved_provider = metadata.get('provider', '未知')
+            message_count = len(self.messages)
+
+            # 打印加载成功信息
+            print(f"✓ 已加载历史对话: {path.name}")
+            print(f"  原模型: {saved_model}")
+            print(f"  原提供商: {saved_provider}")
+            print(f"  消息数: {message_count}")
+
+            return True
+
+        except json.JSONDecodeError as e:
+            # JSON 解析错误
+            print(f"⚠ JSON 解析失败: {str(e)}")
+            return False
+
+        except Exception as e:
+            # 其他所有错误
+            print(f"⚠ 加载失败: {str(e)}")
+            return False
