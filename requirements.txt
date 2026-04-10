@@ -1,10 +1,15 @@
+# ========== V1 基础依赖 ==========
+
 # LLM API
+# openai 库用于调用 DeepSeek/OpenAI API
 openai>=1.0.0
 
 # 环境变量管理
+# python-dotenv 用于从 .env 文件加载配置
 python-dotenv>=1.0.0
 
 # CLI 美化
+# rich 用于彩色输出和美化界面
 rich>=13.0.0
 
 # Web UI（可选）
@@ -12,3 +17,34 @@ streamlit>=1.28.0
 
 # Token 计数（可选，用于精确计算）
 tiktoken>=0.5.0
+
+
+# ========== V2 RAG 依赖 ==========
+
+# LangChain 框架
+# langchain: 核心框架，提供文档加载、文本分割、链式调用等抽象
+# langchain-core: 核心接口和基础组件
+# langchain-community: 社区贡献的组件（包括 Chroma、各种 Loader）
+# langchain-text-splitters: 文本分割组件（V0.2+ 独立出来）
+# langchain-openai: OpenAI 相关组件（Embedding、Chat）
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+langchain-text-splitters>=0.2.0
+langchain-openai>=0.1.0
+
+# 向量数据库
+# chromadb: 零配置的本地向量数据库，支持持久化存储
+chromadb>=0.4.0
+
+# 文档解析
+# pypdf: 解析 PDF 文件，提取文本内容
+pypdf>=3.0.0
+
+# 文件类型检测（pypdf 等库需要）
+python-magic>=0.4.27
+
+# 本地 Embedding 模型（可选，如需本地运行 bge-m3）
+# sentence-transformers: HuggingFace 的句子嵌入模型库
+# 注意：首次使用时会自动下载模型，约 100MB-1GB
+# sentence-transformers>=2.2.0

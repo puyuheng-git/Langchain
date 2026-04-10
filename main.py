@@ -59,6 +59,10 @@ from chat.session import ChatSession
 # Config 包含所有配置信息（API Key、模型参数、路径设置等）
 from config import Config
 
+# 【V2 新增】导入 RAG Pipeline
+# RAGPipeline 是文档知识库的核心，整合了加载、分块、向量化、检索全流程
+from rag.pipeline import RAGPipeline
+
 
 # ============================================
 # 初始化 Rich 控制台
@@ -85,10 +89,21 @@ def print_banner():
     """
     # 使用三引号字符串（多行字符串）定义横幅内容
     # .format() 方法用于格式化字符串，将 {} 占位符替换为实际值
+    # 【V2 更新】检查是否有文档在知识库中
+    doc_count = 0
+    if 'rag_pipeline' in globals() and rag_pipeline:
+        doc_count = rag_pipeline.vectorstore.count()
+
+    # 根据是否有文档，显示不同的副标题
+    if doc_count > 0:
+        subtitle = f"能读懂你的文档 | 知识库: {doc_count} 个块"
+    else:
+        subtitle = "会聊天的笔记本 | 使用 /ingest 添加文档"
+
     banner_text = """
 ╔════════════════════════════════════════╗
-║     🤖 AI 知识库助手 - V1               ║
-║     会聊天的笔记本                      ║
+║     🤖 AI 知识库助手 - V2               ║
+║     {subtitle: <24}     ║
 ╚════════════════════════════════════════╝
 
 Provider: {provider}
@@ -99,7 +114,8 @@ Model: {model}
 """.format(
         # 从 Config 类获取当前配置
         provider=Config.LLM_PROVIDER,    # 提供商名称（deepseek/openai）
-        model=Config.DEFAULT_MODEL       # 模型名称
+        model=Config.DEFAULT_MODEL,      # 模型名称
+        subtitle=subtitle                # 动态副标题
     )
 
     # 根据是否可用 Rich 选择不同的输出方式
@@ -127,6 +143,13 @@ def print_help():
   /save [name]       保存对话到 data/history/
   /history           查看历史对话列表
   /load <文件名>     加载历史对话
+
+  # --- V2 文档知识库命令 ---
+  /ingest <路径>     上传/索引文档（支持 PDF/TXT/MD）
+  /docs              查看已索引的文档列表
+  /delete <文档名>   删除指定文档
+  /search <关键词>   测试检索（不生成回答）
+
   /stats             显示对话统计信息
   /model             显示当前模型信息
   exit / quit        退出程序
@@ -329,6 +352,16 @@ def main():
     # 这会从 .env 加载配置，初始化 OpenAI 客户端
     session = ChatSession()
 
+    # 【V2 新增】初始化 RAG Pipeline
+    # 用于文档知识库的加载、检索和问答
+    # 如果初始化失败（如缺少依赖），不影响 V1 的对话功能
+    rag_pipeline = None
+    try:
+        rag_pipeline = RAGPipeline()
+    except Exception as e:
+        print(f"⚠ RAG Pipeline 初始化失败: {str(e)}")
+        print("  文档知识库功能不可用，但多轮对话仍可正常使用")
+
     # ----------------------------------------
     # 步骤 3: 显示欢迎信息
     # ----------------------------------------
@@ -467,6 +500,90 @@ def main():
                     print("⚠ 请提供文件名，例如: /load chat_20240101_120000.json")
                 continue
 
+            # ========== 【V2 新增】文档知识库命令 ==========
+
+            # 检查是否为 /ingest 命令（文档入库）
+            if user_input.startswith('/ingest '):
+                # 检查 RAG Pipeline 是否可用
+                if rag_pipeline is None:
+                    print("⚠ RAG Pipeline 未初始化，无法使用文档功能")
+                    print("  请检查依赖是否安装: pip install -r requirements.txt")
+                    continue
+
+                # 提取文件路径参数
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    file_path = parts[1]
+                    # 去除路径中可能的引号
+                    # 用户输入时常会加引号，如: "/path/to/file.txt"
+                    file_path = file_path.strip('"').strip("'")
+                    # 调用 RAG Pipeline 的入库方法
+                    rag_pipeline.ingest_document(file_path)
+                else:
+                    print("⚠ 请提供文档路径，例如: /ingest data/docs/myfile.pdf")
+                continue
+
+            # 检查是否为 /docs 命令（查看已索引文档）
+            if user_input == '/docs':
+                if rag_pipeline is None:
+                    print("⚠ RAG Pipeline 未初始化")
+                    continue
+
+                # 获取已索引的文档列表
+                docs = rag_pipeline.list_documents()
+                if not docs:
+                    print("\n📂 知识库中没有文档")
+                    print("  使用 /ingest <路径> 添加文档")
+                else:
+                    print(f"\n📚 知识库中的文档（共 {len(docs)} 个）:")
+                    for doc in docs:
+                        print(f"  - {doc['source']}: {doc['count']} 个块")
+                continue
+
+            # 检查是否为 /delete 命令（删除文档）
+            if user_input.startswith('/delete '):
+                if rag_pipeline is None:
+                    print("⚠ RAG Pipeline 未初始化")
+                    continue
+
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    source = parts[1]
+                    # 删除指定文档
+                    deleted_count = rag_pipeline.delete_document(source)
+                    if deleted_count > 0:
+                        print(f"✓ 已删除文档 '{source}'（{deleted_count} 个块）")
+                    else:
+                        print(f"⚠ 未找到文档 '{source}'")
+                else:
+                    print("⚠ 请提供文档名，例如: /delete mydoc.pdf")
+                continue
+
+            # 检查是否为 /search 命令（测试检索）
+            if user_input.startswith('/search '):
+                if rag_pipeline is None:
+                    print("⚠ RAG Pipeline 未初始化")
+                    continue
+
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    query = parts[1]
+                    print(f"\n🔍 检索: '{query}'")
+                    # 执行检索（不生成回答）
+                    results = rag_pipeline.search_only(query, k=4)
+                    if results:
+                        print(f"  找到 {len(results)} 个相关文档块:\n")
+                        for i, r in enumerate(results, 1):
+                            print(f"  [{i}] 相似度: {r['score']:.4f}")
+                            print(f"      来源: {r['metadata'].get('source', '未知')}")
+                            content = r['content'][:100].replace('\n', ' ')
+                            print(f"      内容: {content}...\n")
+                    else:
+                        print("  未找到相关文档")
+                else:
+                    print("⚠ 请提供检索关键词，例如: /search Python")
+                continue
+
             # 检查是否为其他以 / 开头的未知命令
             if user_input.startswith('/'):
                 print(f"⚠ 未知命令: {user_input}")
@@ -475,25 +592,59 @@ def main():
 
             # ===== 正常对话处理 =====
 
-            # 如果不是命令，就作为普通消息发送给 AI
+            # 检查是否有文档在知识库中
+            # 如果有，使用 RAG 模式回答；否则使用普通对话
+            use_rag = (
+                rag_pipeline is not None and
+                rag_pipeline.vectorstore.count() > 0
+            )
 
-            if USE_RICH:
-                # 使用 Rich 显示带样式的提示
-                console.print("[bold green]🤖 Assistant: [/bold green]", end="")
+            if use_rag:
+                # ===== RAG 模式：基于文档回答 =====
+                print("\n🔍 正在检索相关文档...")
+
+                try:
+                    # 调用 RAG Pipeline 查询
+                    result = rag_pipeline.query(user_input, k=4)
+
+                    # 显示回答
+                    if USE_RICH:
+                        console.print("[bold green]🤖 Assistant: [/bold green]")
+                    else:
+                        print("\n🤖 Assistant:")
+
+                    print(result['answer'])
+
+                    # 显示来源（如果有）
+                    if result['sources']:
+                        print("\n📚 参考来源:")
+                        for src in result['sources']:
+                            source_name = src['source']
+                            if 'page' in src:
+                                print(f"  - 《{source_name}》第{src['page']}页")
+                            else:
+                                print(f"  - 《{source_name}》")
+
+                    # 将问答添加到对话历史（可选）
+                    # 这样用户可以在 RAG 回答后继续追问
+                    session.add_message('user', user_input)
+                    session.add_message('assistant', result['answer'])
+
+                except Exception as e:
+                    print(f"\n[错误] RAG 查询失败: {str(e)}")
+
             else:
-                # 普通 print，end="" 表示不换行
-                # 因为 AI 回复会紧跟着输出
-                print("🤖 Assistant: ", end="")
+                # ===== 普通对话模式 =====
+                if USE_RICH:
+                    console.print("[bold green]🤖 Assistant: [/bold green]", end="")
+                else:
+                    print("🤖 Assistant: ", end="")
 
-            try:
-                # 调用 session.chat() 发送消息给 AI
-                # stream=True 启用流式输出（逐字显示）
-                session.chat(user_input, stream=True)
-
-            except Exception as e:
-                # 如果 API 调用失败，错误信息已在 session.chat() 中打印
-                # 这里捕获异常防止程序崩溃，继续下一次循环
-                pass
+                try:
+                    # 调用 session.chat() 发送消息给 AI
+                    session.chat(user_input, stream=True)
+                except Exception as e:
+                    pass
 
         # ----------------------------------------
         # 异常处理
