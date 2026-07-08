@@ -25,8 +25,8 @@ api_key = os.getenv('API_KEY', '')
 
 - **V1** ✓: 会聊天的笔记本 - 多轮对话 CLI
 - **V2** ✓: 能读懂你的文档 - RAG 向量知识库
-- **V3**: 会主动帮你做事 - Agent + 工具调用
-- **V4**: 完全属于你的模型 - LoRA 微调 + 本地部署
+- **V3** ✓: 会主动帮你做事 - Agent + 工具调用 + 长期记忆
+- **V4** ✓: 完全属于你的模型 - LoRA 微调 + 多模态 + 本地部署（代码与配置已就绪，训练/部署需 GPU/Ollama）
 
 ## 运行方式
 
@@ -55,7 +55,8 @@ LangChain/
 ├── .gitignore           # Git 忽略规则
 ├── chat/                # 【V1】对话模块包
 │   ├── __init__.py
-│   └── session.py       # ChatSession 类
+│   ├── session.py       # ChatSession 类
+│   └── memory.py        # 【V3 新增】LongTermMemory 长期记忆（基于 Chroma）
 ├── rag/                 # 【V2 新增】RAG 模块包
 │   ├── __init__.py
 │   ├── loader.py        # 文档加载（PDF/TXT/MD）
@@ -63,11 +64,23 @@ LangChain/
 │   ├── embedder.py      # Embedding 向量化
 │   ├── vectorstore.py   # Chroma 向量数据库
 │   ├── retriever.py     # 相似度检索
-│   └── pipeline.py      # RAG 流程编排
+│   ├── pipeline.py      # RAG 流程编排
+│   └── multimodal.py    # 【V4 新增】图片 OCR → 入库
+├── agent/               # 【V3 新增】Agent 模块包
+│   ├── __init__.py
+│   ├── tools.py         # 工具注册表（搜索/代码/知识库/记忆/提醒）
+│   └── graph.py         # LangGraph StateGraph + KnowledgeAgent
+├── finetune/            # 【V4 新增】微调模块包
+│   ├── __init__.py
+│   ├── data_prep.py     # 对话历史 → Alpaca 格式数据集
+│   ├── train_config.yaml# LLaMA-Factory LoRA 配置
+│   ├── dataset_info.json# 数据集注册
+│   └── README.md        # 训练 + Ollama 部署完整步骤
 └── data/                # 数据目录（自动创建）
     ├── docs/            # 【V2】用户上传的原始文档
-    ├── chroma_db/       # 【V2】向量数据库
-    └── history/         # 对话历史存储
+    ├── chroma_db/       # 【V2/V3】向量库（文档 + 长期记忆两个集合）
+    ├── history/         # 对话历史存储
+    └── reminders.json   # 【V3】提醒清单
 ```
 
 ## CLI 命令
@@ -96,6 +109,16 @@ LangChain/
 | `/docs` | 查看已索引的文档列表 |
 | `/delete <文档名>` | 删除指定文档 |
 | `/search <关键词>` | 测试检索（不生成回答） |
+
+### V3 智能体与记忆命令
+
+| 命令 | 说明 |
+|------|------|
+| `/agent <任务>` | 让智能体自主规划、调用工具完成多步任务 |
+| `/remember <内容>` | 把一条信息存入长期记忆（跨对话记住） |
+| `/memories` | 查看所有长期记忆 |
+| `/recall <查询>` | 测试记忆召回（按语义找相关记忆） |
+| `/reminders` | 查看提醒清单 |
 
 ## 使用示例
 
@@ -187,6 +210,38 @@ $ python main.py
 - 整合所有组件
 - 提供 `ingest_document()` 和 `query()` 接口
 
+### Agent 层 (agent/) 【V3】
+
+**工具注册表 (tools.py)**
+- `build_tools(rag_pipeline, memory)` 工厂函数，用依赖注入创建工具
+- 工具：网页搜索(Tavily)、Python 代码执行、知识库读/写、保存记忆、添加提醒
+- 每个工具用 `@tool` 装饰，docstring 即「给 LLM 看的说明书」
+
+**LangGraph 编排 (graph.py)**
+- `AgentState`：在节点间流转的状态（messages + iterations）
+- 三节点：`plan`(规划) → `execute`(执行工具) → `reflect`(反思收尾)
+- 条件路由：plan 后若有工具调用则 execute，execute 后回到 plan（ReAct 回环）
+- `KnowledgeAgent.run()`：召回长期记忆注入 system prompt，再跑图
+- 用 `ChatOpenAI` 指向 DeepSeek 驱动工具调用
+
+### 记忆层 (chat/memory.py) 【V3】
+
+**LongTermMemory**
+- 复用 Embedder + VectorStore（独立集合 `long_term_memory`）
+- 跨对话记住用户偏好/概念/计划，按语义召回
+- 每条记忆用唯一 `mem_UUID` 作 source，避免 ID 冲突
+
+### 多模态层 (rag/multimodal.py) 【V4】
+
+**MultimodalProcessor**
+- `ocr_image()`：用视觉模型(gpt-4o)把图片文字提取出来
+- `ingest_image()`：OCR → 存 md → 入库，让图片笔记可被检索
+
+### 模型层切换 (config.py) 【V4】
+
+- `LLM_PROVIDER=ollama` 时，`get_api_config()` 返回本地 Ollama 地址
+- Ollama 提供 OpenAI 兼容接口，现有 ChatSession/Agent 零改动即可用本地模型
+
 ### 入口层 (main.py)
 - CLI 界面循环
 - 命令解析和处理
@@ -249,6 +304,36 @@ $ python main.py
 
 **流式输出 (Streaming)**: API 逐字返回结果，而不是等全部生成后再返回，用户体验更好
 
+### V3/V4 关键概念
+
+**Agent（智能体）**
+- 与普通对话的区别：普通对话是「被动响应」，Agent 会「主动规划 + 调用工具做事」
+- 工作模式 ReAct：推理(Reasoning) → 行动(Acting) → 观察结果 → 再推理，循环直到完成
+
+**LangGraph**
+- 用「有向图」建模 Agent 流程：State(状态)、Node(节点)、Edge(边)、条件边
+- 比传统 AgentExecutor 更可控，能清晰表达「规划→执行→反思」的循环
+
+**工具调用 (Tool Calling)**
+- 把工具的「名字/功能/参数」告诉大模型，模型决定何时调用哪个工具
+- 程序执行工具，把结果喂回模型，模型据此继续或给出答案
+
+**短期记忆 vs 长期记忆**
+- 短期记忆：本次对话的 messages（关程序即消失）
+- 长期记忆：存入 Chroma、跨对话持久化的用户偏好/计划/概念
+
+**微调 vs RAG（互补）**
+- RAG：给模型「外挂知识库」，更新的是「知道什么」
+- 微调：调整模型参数，改变的是「说话风格/行为方式」
+
+**LoRA / QLoRA**
+- LoRA：只训练少量「插件」参数，省显存、快、产物小
+- QLoRA：在 LoRA 基础上把基座模型 4-bit 量化加载，进一步省显存
+
+**Ollama 本地部署**
+- 一条命令在本机跑大模型，提供 OpenAI 兼容接口
+- 本项目只需把 `LLM_PROVIDER` 改成 `ollama` 即可调用本地模型，数据不出本机
+
 ## 依赖说明
 
 ### V1 基础依赖
@@ -269,6 +354,23 @@ $ python main.py
 | `chromadb` | 向量数据库，本地存储 |
 | `pypdf` | PDF 文档解析 |
 | `python-magic` | 文件类型检测 |
+
+### V3 Agent 依赖
+
+| 包名 | 用途 |
+|------|------|
+| `langgraph` | 用有向图编排 Agent 的规划/执行/反思流程 |
+| `langchain-openai` | `ChatOpenAI` 驱动 DeepSeek 做工具调用（V2 已装） |
+| `tavily-python` | 网页搜索 API（每月 1000 次免费） |
+
+### V4 多模态/微调/部署依赖
+
+| 名称 | 用途 | 安装方式 |
+|------|------|---------|
+| `pillow` | 图片处理（多模态 OCR） | pip |
+| LLaMA-Factory | LoRA 微调工具 | AutoDL GPU 机器单独装 |
+| Ollama | 本地模型部署 | 本机单独装（ollama.ai） |
+| llama.cpp | 模型量化/转 GGUF | AutoDL 单独装 |
 
 ## 注意事项
 

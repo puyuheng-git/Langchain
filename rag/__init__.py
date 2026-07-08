@@ -41,6 +41,13 @@ from .chunker import TextChunker
 from .retriever import Retriever, RAGPromptBuilder
 from .pipeline import RAGPipeline
 
+# 【V4 新增】多模态处理器（图片 OCR）
+# 依赖 openai（已是项目依赖），用 try/except 保险起见
+try:
+    from .multimodal import MultimodalProcessor
+except Exception:
+    MultimodalProcessor = None
+
 # __all__ 定义了使用 "from rag import *" 时会导入的内容
 __all__ = [
     'Embedder',
@@ -49,5 +56,6 @@ __all__ = [
     'TextChunker',
     'Retriever',
     'RAGPromptBuilder',
-    'RAGPipeline'
+    'RAGPipeline',
+    'MultimodalProcessor'
 ]

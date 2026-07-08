@@ -1,0 +1,118 @@
+# ============================================================
+#  LLaMA-Factory LoRA 微调配置 —— V4
+#  用途：用你自己的对话数据，对 Qwen2-7B 做 LoRA 微调，
+#        让模型「说话风格更像你/更懂你的领域」
+#
+#  使用方法（在装好 LLaMA-Factory 的机器/AutoDL 上）：
+#      llamafactory-cli train finetune/train_config.yaml
+#
+#  说明：本文件每一项都有注释，方便初学者理解每个参数的含义。
+# ============================================================
+
+### ---------- 模型部分 ----------
+
+# model_name_or_path: 要微调的「基座模型」
+# Qwen/Qwen2-7B-Instruct 是通义千问 2 代 7B 指令模型，中文效果好
+# 首次运行会自动从 HuggingFace 下载（约 15GB），国内可设镜像加速
+model_name_or_path: Qwen/Qwen2-7B-Instruct
+
+### ---------- 方法部分 ----------
+
+# stage: 训练阶段。sft = Supervised Fine-Tuning（有监督微调）
+# 就是「给问答对，教模型照着答」，最常用的微调方式
+stage: sft
+
+# do_train: 是否进行训练（true 表示训练）
+do_train: true
+
+# finetuning_type: 微调类型。lora 表示只训练少量「插件」参数
+# LoRA 的好处：显存占用小、训练快、产出文件小，个人最友好
+finetuning_type: lora
+
+# lora_target: 对模型的哪些层加 LoRA。all 表示所有线性层（效果好）
+# 也可以指定具体层，如 q_proj,v_proj（更省显存）
+lora_target: all
+
+# lora_rank: LoRA 的「秩」，控制新增参数量。越大表达能力越强但越占显存
+# 个人微调常用 8 或 16
+lora_rank: 8
+
+# lora_alpha: LoRA 的缩放系数，通常设为 lora_rank 的 2 倍
+lora_alpha: 16
+
+# lora_dropout: 训练时随机丢弃部分连接，防止过拟合
+lora_dropout: 0.05
+
+### ---------- 量化部分（QLoRA，可选但强烈推荐）----------
+
+# quantization_bit: 把基座模型量化到多少位来加载
+# 4 表示 4-bit（QLoRA），能把 7B 模型的显存需求从 ~16GB 降到 ~8GB
+# 显存紧张时务必开启；显存充足（>24GB）可注释掉这行用全精度
+quantization_bit: 4
+
+### ---------- 数据集部分 ----------
+
+# dataset: 使用的数据集名称，必须和 dataset_info.json 里注册的名字一致
+# 我们注册的名字是 my_notes（见 finetune/dataset_info.json）
+dataset: my_notes
+
+# template: 对话模板，必须和基座模型匹配。Qwen 系列用 qwen
+template: qwen
+
+# cutoff_len: 单条样本的最大 token 长度，超出会被截断
+cutoff_len: 2048
+
+# max_samples: 最多使用多少条样本（设很大即用全部）
+max_samples: 100000
+
+# overwrite_cache: 是否覆盖数据预处理缓存（改了数据就设 true）
+overwrite_cache: true
+
+# preprocessing_num_workers: 数据预处理用几个进程（加速）
+preprocessing_num_workers: 8
+
+### ---------- 输出部分 ----------
+
+# output_dir: 训练产物（LoRA 权重、日志）的保存目录
+output_dir: saves/qwen2-7b/lora/my-brain
+
+# logging_steps: 每训练多少步打印一次日志
+logging_steps: 10
+
+# save_steps: 每训练多少步保存一次检查点
+save_steps: 200
+
+# plot_loss: 训练结束后是否画 loss 曲线图（直观看收敛情况）
+plot_loss: true
+
+# overwrite_output_dir: 是否覆盖已有的输出目录
+overwrite_output_dir: true
+
+### ---------- 训练超参数 ----------
+
+# per_device_train_batch_size: 每张显卡一次处理几条样本
+# 显存小就设 1
+per_device_train_batch_size: 1
+
+# gradient_accumulation_steps: 梯度累积步数
+# 相当于「攒 N 个小 batch 再更新一次」，用小显存模拟大 batch
+# 有效 batch = per_device_train_batch_size × 这个值 = 1 × 8 = 8
+gradient_accumulation_steps: 8
+
+# learning_rate: 学习率，控制每次参数更新的幅度
+# LoRA 常用 1e-4 左右
+learning_rate: 1.0e-4
+
+# num_train_epochs: 训练轮数（把数据集完整过几遍）
+# 小数据集可以多几轮，但太多会过拟合，3 轮是常见起点
+num_train_epochs: 3.0
+
+# lr_scheduler_type: 学习率调度策略。cosine = 余弦退火，平滑下降
+lr_scheduler_type: cosine
+
+# warmup_ratio: 预热比例，训练初期学习率从 0 慢慢升上来，更稳定
+warmup_ratio: 0.1
+
+# bf16: 是否用 bfloat16 精度训练（省显存、速度快）
+# 新显卡（如 3090/4090/A100）支持；老显卡可改用 fp16: true
+bf16: true

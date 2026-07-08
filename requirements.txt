@@ -48,3 +48,32 @@ python-magic>=0.4.27
 # sentence-transformers: HuggingFace 的句子嵌入模型库
 # 注意：首次使用时会自动下载模型，约 100MB-1GB
 # sentence-transformers>=2.2.0
+
+
+# ========== V3 Agent 依赖 ==========
+
+# LangGraph 框架
+# langgraph: 用「有向图」编排 Agent 的规划/执行/反思流程，比 AgentExecutor 更可控
+langgraph>=0.2.0
+
+# 说明：langchain-openai 在 V2 已列出，Agent 复用它来驱动 DeepSeek 做工具调用
+
+# 网页搜索工具
+# tavily-python: 专为 AI Agent 设计的搜索 API，每月 1000 次免费额度
+# 注册地址：https://tavily.com
+tavily-python>=0.3.0
+
+
+# ========== V4 多模态 / 微调 / 本地部署 依赖 ==========
+
+# 图片处理（多模态 OCR 读取图片）
+# Pillow: Python 图像处理库
+pillow>=10.0.0
+
+# 以下为「外部工具」，不通过 pip 安装到本项目，按 finetune/README.md 单独安装：
+# - LLaMA-Factory: 微调工具（在 AutoDL GPU 机器上安装）
+#   https://github.com/hiyouga/LLaMA-Factory
+# - Ollama: 本地模型部署工具（在你自己电脑安装）
+#   https://ollama.ai
+# - llama.cpp: 模型量化/转 GGUF（在 AutoDL 上安装）
+#   https://github.com/ggerganov/llama.cpp

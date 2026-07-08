@@ -1,0 +1,12 @@
+{
+  "//说明": "这是 LLaMA-Factory 的数据集注册文件。把本文件里的 my_notes 条目合并到 LLaMA-Factory 项目 data/dataset_info.json 中，并把 alpaca_data.json 放到 LLaMA-Factory 的 data/ 目录下。",
+  "my_notes": {
+    "file_name": "alpaca_data.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
+  }
+}

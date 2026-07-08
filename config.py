@@ -124,6 +124,57 @@ class Config:
     # 位于 DATA_DIR 下的 history 子目录
     HISTORY_DIR = DATA_DIR / 'history'
 
+    # DOCS_DIR 是原始文档存储目录（V2 使用，V3 知识库写入工具也会用到）
+    # 位于 DATA_DIR 下的 docs 子目录
+    DOCS_DIR = DATA_DIR / 'docs'
+
+    # REMINDERS_FILE 是提醒事项的存储文件（V3 新增）
+    # Agent 的「日历提醒」工具会把待办写入这个 JSON 文件
+    # 程序启动时会读取它，实现「主动提醒」功能
+    REMINDERS_FILE = DATA_DIR / 'reminders.json'
+
+    # ----------------------------------------
+    # 【V3 新增】Ollama 本地模型配置
+    # ----------------------------------------
+
+    # OLLAMA_BASE_URL 是本地 Ollama 服务的地址
+    # Ollama 提供 OpenAI 兼容接口，所以可以复用现有的 ChatSession
+    # 默认 http://localhost:11434/v1（Ollama 的标准本地地址）
+    # V4 微调完成后，把 LLM_PROVIDER 改成 ollama 即可用本地模型
+    OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434/v1')
+
+    # OLLAMA_MODEL 是要使用的本地模型名称
+    # 例如 qwen2.5:7b，或微调导出后你自己命名的模型（如 my-brain）
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen2.5:7b')
+
+    # ----------------------------------------
+    # 【V3 新增】工具相关配置
+    # ----------------------------------------
+
+    # TAVILY_API_KEY 是 Tavily 网页搜索服务的密钥
+    # Tavily 每月有 1000 次免费额度，专为 AI Agent 设计
+    # 注册地址：https://tavily.com
+    # 如果不填，网页搜索工具会返回友好提示而不是报错
+    TAVILY_API_KEY = os.getenv('TAVILY_API_KEY', '')
+
+    # AGENT_MAX_ITERATIONS 是 Agent 的最大循环次数
+    # Agent 会「思考→调用工具→再思考」循环，这个值防止无限循环
+    # 达到上限后会强制进入收尾（反思）节点，避免卡死和费用失控
+    AGENT_MAX_ITERATIONS = int(os.getenv('AGENT_MAX_ITERATIONS', '5'))
+
+    # MEMORY_COLLECTION 是长期记忆在 Chroma 中的集合名称
+    # 它与知识库文档（documents 集合）分开存储，互不干扰
+    MEMORY_COLLECTION = os.getenv('MEMORY_COLLECTION', 'long_term_memory')
+
+    # ----------------------------------------
+    # 【V4 新增】多模态（图片 OCR）配置
+    # ----------------------------------------
+
+    # VISION_MODEL 是用于图片文字识别（OCR）的多模态模型名称
+    # 默认 gpt-4o，它能「看懂」图片并提取文字
+    # 复用 OPENAI_API_KEY / OPENAI_BASE_URL（因为是 OpenAI 兼容接口）
+    VISION_MODEL = os.getenv('VISION_MODEL', 'gpt-4o')
+
     # ========================================
     # 类方法
     # ========================================
@@ -174,6 +225,17 @@ class Config:
                 'model': cls.DEFAULT_MODEL if 'gpt' in cls.DEFAULT_MODEL else 'gpt-3.5-turbo'
             }
 
+        elif cls.LLM_PROVIDER == 'ollama':
+            # 【V3/V4 新增】Ollama 本地模型分支
+            # Ollama 是本地运行大模型的工具，提供 OpenAI 兼容接口
+            # 因为是本地服务，不需要真实 API Key，但 OpenAI SDK 要求非空
+            # 所以这里填一个占位字符串 'ollama'
+            return {
+                'api_key': 'ollama',                 # 占位符，本地服务不校验
+                'base_url': cls.OLLAMA_BASE_URL,     # 本地 Ollama 地址
+                'model': cls.OLLAMA_MODEL            # 本地模型名称
+            }
+
         else:
             # f-string（格式化字符串）用于在字符串中嵌入变量
             # {cls.LLM_PROVIDER} 会被替换为实际的值
@@ -191,6 +253,8 @@ class Config:
         # parents=True 表示如果需要则自动创建父目录
         cls.DATA_DIR.mkdir(exist_ok=True)
         cls.HISTORY_DIR.mkdir(exist_ok=True)
+        # 【V2/V3】确保文档目录存在（知识库写入工具会用到）
+        cls.DOCS_DIR.mkdir(exist_ok=True)
 
 
 # ============================================

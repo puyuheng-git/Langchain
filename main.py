@@ -63,6 +63,22 @@ from config import Config
 # RAGPipeline 是文档知识库的核心，整合了加载、分块、向量化、检索全流程
 from rag.pipeline import RAGPipeline
 
+# 【V3 新增】导入 Agent 和长期记忆（可选依赖，用 try/except 优雅降级）
+# KnowledgeAgent 依赖 langgraph、langchain-openai；LongTermMemory 依赖 rag 组件
+# 如果这些库没安装，AGENT_AVAILABLE 会是 False，程序退回到 V1/V2 功能
+try:
+    # 从 agent 包导入智能体主类
+    from agent import KnowledgeAgent
+    # 从 chat 包导入长期记忆类
+    from chat.memory import LongTermMemory
+    # 标志：Agent 相关功能是否可用
+    AGENT_AVAILABLE = True
+except Exception as _agent_import_error:
+    # 导入失败（缺依赖等），记录标志并保存错误原因
+    AGENT_AVAILABLE = False
+    # 保存错误信息，稍后初始化时给用户提示
+    _AGENT_IMPORT_ERROR = str(_agent_import_error)
+
 
 # ============================================
 # 初始化 Rich 控制台
@@ -96,13 +112,13 @@ def print_banner():
 
     # 根据是否有文档，显示不同的副标题
     if doc_count > 0:
-        subtitle = f"能读懂你的文档 | 知识库: {doc_count} 个块"
+        subtitle = f"主动帮你做事 | 知识库: {doc_count} 个块"
     else:
-        subtitle = "会聊天的笔记本 | 使用 /ingest 添加文档"
+        subtitle = "主动帮你做事 | /agent 启动智能体"
 
     banner_text = """
 ╔════════════════════════════════════════╗
-║     🤖 AI 知识库助手 - V2               ║
+║     🤖 AI 知识库助手 - V3               ║
 ║     {subtitle: <24}     ║
 ╚════════════════════════════════════════╝
 
@@ -149,6 +165,13 @@ def print_help():
   /docs              查看已索引的文档列表
   /delete <文档名>   删除指定文档
   /search <关键词>   测试检索（不生成回答）
+
+  # --- V3 智能体与记忆命令 ---
+  /agent <任务>      让智能体自主规划、调用工具完成多步任务
+  /remember <内容>   把一条信息存入长期记忆（跨对话记住）
+  /memories          查看所有长期记忆
+  /recall <查询>     测试记忆召回（按语义找相关记忆）
+  /reminders         查看提醒清单
 
   /stats             显示对话统计信息
   /model             显示当前模型信息
@@ -306,6 +329,64 @@ def ask_load_history(session: ChatSession):
         return False
 
 
+def show_startup_reminders(memory=None):
+    """
+    【V3 新增】启动时的「主动提醒」
+
+    这是 Agent 从「被动响应」走向「主动帮忙」的体现：
+    程序一启动，就主动检查有没有待办提醒、有没有之前记下的学习计划，
+    然后主动问用户「要不要现在开始？」
+
+    Args:
+        memory: LongTermMemory 实例（可为 None），用于召回学习计划类记忆
+    """
+    # ----- 第一部分: 读取提醒清单 -----
+    # 提醒存在 Config.REMINDERS_FILE 指定的 JSON 文件里
+    reminders_file = Config.REMINDERS_FILE
+
+    # 只有文件存在时才读取
+    if reminders_file.exists():
+        try:
+            # 导入 json 用于解析文件内容
+            import json
+            # 读取并解析 JSON（得到一个列表）
+            reminders = json.loads(reminders_file.read_text(encoding="utf-8"))
+
+            # 过滤出「还没完成」的提醒（done 为 False）
+            # 列表推导式：只保留满足条件的元素
+            pending = [r for r in reminders if not r.get("done", False)]
+
+            # 如果有未完成的提醒，主动显示
+            if pending:
+                print("\n🔔 你还有未完成的提醒:")
+                # 最多显示 5 条，避免刷屏
+                for r in pending[:5]:
+                    # 拼出时间描述（如果有）
+                    when_text = f"（{r['when']}）" if r.get("when") else ""
+                    print(f"   • {r['task']} {when_text}")
+        except Exception:
+            # 读取/解析失败就静默跳过，不影响启动
+            pass
+
+    # ----- 第二部分: 根据长期记忆主动提及学习计划 -----
+    # 如果有记忆模块，召回「plan（计划）」类的记忆
+    if memory is not None:
+        try:
+            # 用与「计划」相关的查询，召回 plan 类的记忆
+            plans = memory.recall("学习计划 打算 要做", k=2, category="plan")
+
+            # 如果找到了计划，主动提及
+            if plans:
+                print("\n💡 我记得你之前提到:")
+                for p in plans:
+                    print(f"   • {p['content']}")
+                # 主动询问，体现「主动帮你做事」
+                print("   要现在开始吗？（可以用 /agent 让我帮你）")
+        except Exception:
+            # 召回失败静默跳过
+            pass
+
+
 # ============================================
 # 主函数
 # ============================================
@@ -362,6 +443,30 @@ def main():
         print(f"⚠ RAG Pipeline 初始化失败: {str(e)}")
         print("  文档知识库功能不可用，但多轮对话仍可正常使用")
 
+    # 【V3 新增】初始化长期记忆和智能体（Agent）
+    # 同样用 try/except 优雅降级：任一失败都不影响 V1/V2 功能
+    memory = None   # 长期记忆对象
+    agent = None    # 智能体对象
+    if AGENT_AVAILABLE:
+        # 依赖库已安装，尝试真正初始化
+        try:
+            # 先建长期记忆（Agent 需要用到它）
+            memory = LongTermMemory()
+        except Exception as e:
+            print(f"⚠ 长期记忆初始化失败: {str(e)}")
+            print("  记忆功能不可用（通常是缺少 Embedding 配置）")
+
+        try:
+            # 再建智能体，把知识库和记忆注入进去
+            agent = KnowledgeAgent(rag_pipeline=rag_pipeline, memory=memory)
+        except Exception as e:
+            print(f"⚠ Agent 初始化失败: {str(e)}")
+            print("  /agent 命令不可用，但其他功能正常")
+    else:
+        # 依赖库没装，提示用户（不影响 V1/V2）
+        print("ℹ Agent 功能未启用（缺少 langgraph 等依赖）")
+        print("  如需使用 /agent，请运行: pip install langgraph langchain-openai tavily-python")
+
     # ----------------------------------------
     # 步骤 3: 显示欢迎信息
     # ----------------------------------------
@@ -371,6 +476,10 @@ def main():
     # 启动时询问是否加载历史对话
     # 这会检查是否有保存的历史文件，并询问用户是否加载
     ask_load_history(session)
+
+    # 【V3 新增】启动时主动提醒
+    # 检查提醒清单和长期记忆里的学习计划，主动提及
+    show_startup_reminders(memory)
 
     # ----------------------------------------
     # 步骤 4: 主循环
@@ -582,6 +691,111 @@ def main():
                         print("  未找到相关文档")
                 else:
                     print("⚠ 请提供检索关键词，例如: /search Python")
+                continue
+
+            # ========== 【V3 新增】智能体与记忆命令 ==========
+
+            # 检查是否为 /agent 命令（运行智能体完成任务）
+            if user_input.startswith('/agent '):
+                # 检查 Agent 是否可用
+                if agent is None:
+                    print("⚠ Agent 不可用（缺少 langgraph 依赖或初始化失败）")
+                    print("  请运行: pip install langgraph langchain-openai tavily-python")
+                    continue
+
+                # 提取任务描述
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    task = parts[1]
+                    print(f"\n🤖 智能体开始处理任务: {task}\n")
+                    try:
+                        # 调用 Agent 的 run 方法，它会自主规划并调用工具
+                        answer = agent.run(task)
+                        # 打印最终答案
+                        if USE_RICH:
+                            console.print("[bold green]🤖 Assistant: [/bold green]")
+                        else:
+                            print("\n🤖 Assistant:")
+                        print(answer)
+                    except Exception as e:
+                        print(f"\n[错误] Agent 执行失败: {str(e)}")
+                else:
+                    print("⚠ 请提供任务，例如: /agent 帮我查 LangGraph 并总结成笔记")
+                continue
+
+            # 检查是否为 /remember 命令（存长期记忆）
+            if user_input.startswith('/remember '):
+                if memory is None:
+                    print("⚠ 长期记忆不可用（缺少依赖或 Embedding 配置）")
+                    continue
+
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    content = parts[1]
+                    # 手动存入的记忆统一归为 fact 类
+                    memory.remember(content, category="fact")
+                else:
+                    print("⚠ 请提供内容，例如: /remember 我在学 LangChain")
+                continue
+
+            # 检查是否为 /memories 命令（列出所有记忆）
+            if user_input == '/memories':
+                if memory is None:
+                    print("⚠ 长期记忆不可用")
+                    continue
+
+                # 获取所有记忆
+                mems = memory.list_memories()
+                if not mems:
+                    print("\n🧠 还没有任何长期记忆")
+                    print("  使用 /remember <内容> 添加，或让 Agent 用 save_memory 自动记")
+                else:
+                    print(f"\n🧠 长期记忆（共 {len(mems)} 条）:")
+                    for m in mems:
+                        # 显示分类和内容
+                        print(f"  • [{m['category']}] {m['content']}")
+                continue
+
+            # 检查是否为 /recall 命令（测试记忆召回）
+            if user_input.startswith('/recall '):
+                if memory is None:
+                    print("⚠ 长期记忆不可用")
+                    continue
+
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    query = parts[1]
+                    print(f"\n🔍 召回与 '{query}' 相关的记忆:")
+                    # 按语义召回
+                    results = memory.recall(query, k=3)
+                    if results:
+                        for r in results:
+                            print(f"  • [{r['score']:.3f}] ({r['category']}) {r['content']}")
+                    else:
+                        print("  没有找到相关记忆")
+                else:
+                    print("⚠ 请提供查询，例如: /recall 学习计划")
+                continue
+
+            # 检查是否为 /reminders 命令（查看提醒清单）
+            if user_input == '/reminders':
+                # 提醒功能不依赖 Agent，直接读文件即可
+                reminders_file = Config.REMINDERS_FILE
+                if not reminders_file.exists():
+                    print("\n🔔 还没有任何提醒")
+                    print("  让 Agent 用 add_reminder 工具添加，例如: /agent 提醒我明天复习 LangChain")
+                else:
+                    import json
+                    reminders = json.loads(reminders_file.read_text(encoding="utf-8"))
+                    # 过滤未完成的
+                    pending = [r for r in reminders if not r.get("done", False)]
+                    if not pending:
+                        print("\n🔔 所有提醒都已完成 🎉")
+                    else:
+                        print(f"\n🔔 待办提醒（共 {len(pending)} 条）:")
+                        for r in pending:
+                            when_text = f"（{r['when']}）" if r.get("when") else ""
+                            print(f"  • {r['task']} {when_text}")
                 continue
 
             # 检查是否为其他以 / 开头的未知命令
