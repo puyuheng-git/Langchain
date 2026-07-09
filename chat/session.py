@@ -277,6 +277,14 @@ class ChatSession:
             while end_idx < len(conversation) and conversation[end_idx]['role'] != 'user':
                 end_idx += 1  # 自增运算符，相当于 end_idx = end_idx + 1
 
+            # 【重要保护】永远不删除「最后一轮」对话
+            # 如果这一轮已经延伸到列表末尾（end_idx 到头了），
+            # 说明它就是当前正要发送的最新消息（比如一条很长的 RAG prompt）
+            # 把它删掉的话，API 会收到「没有用户消息」的请求，
+            # 模型只能凭 system prompt 瞎猜——这正是「一直无法回答」的隐患之一
+            if end_idx >= len(conversation):
+                break
+
             # 切片获取要移除的消息
             # conversation[first_user_idx:end_idx] 获取从 first_user_idx 到 end_idx-1 的元素
             removed = conversation[first_user_idx:end_idx]

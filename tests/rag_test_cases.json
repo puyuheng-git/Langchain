@@ -1,0 +1,141 @@
+[
+  {
+    "id": 1, "level": "L1 基础检索",
+    "question": "PHP变量命名规范是什么？",
+    "reference": "小驼峰命名，例如 userInfo。",
+    "keywords": [["小驼峰"]]
+  },
+  {
+    "id": 2, "level": "L1 基础检索",
+    "question": "Mysql唯一索引命名规范是什么？",
+    "reference": "unq_field1_field2。",
+    "keywords": [["unq"]]
+  },
+  {
+    "id": 3, "level": "L1 基础检索",
+    "question": "方法注释必须包含哪些内容？",
+    "reference": "描述、author、date、param、return、throws，接口需@see。",
+    "keywords": [["author", "作者"], ["param", "参数"], ["return", "返回"]]
+  },
+  {
+    "id": 4, "level": "L1 基础检索",
+    "question": "PHP缩进几个空格？",
+    "reference": "4个空格。",
+    "keywords": [["4", "四"], ["空格"]]
+  },
+  {
+    "id": 5, "level": "L1 基础检索",
+    "question": "文件名规范是什么？",
+    "reference": "类文件大驼峰，非类文件全小写。",
+    "keywords": [["大驼峰"], ["小写"]],
+    "k": 10
+  },
+  {
+    "id": 6, "level": "L2 同义词召回",
+    "question": "AI生成代码可以直接提交吗？",
+    "reference": "不可以，必须符合部门编码规范并保持代码风格一致。",
+    "keywords": [["不可以", "不能", "不可", "不行", "不建议", "必须符合", "需要符合"], ["规范"]]
+  },
+  {
+    "id": 7, "level": "L2 同义词召回",
+    "question": "AI写的代码需要人工检查吗？",
+    "reference": "需要整体检查，不符合规范审核员不审核。",
+    "keywords": [["需要", "必须", "要"], ["检查", "审核", "审查"]]
+  },
+  {
+    "id": 8, "level": "L2 同义词召回",
+    "question": "代码评审人员有哪些职责？",
+    "reference": "检查规范、安全、业务逻辑、数据库、报备等。",
+    "keywords": [["规范"], ["安全"], ["业务", "逻辑"]],
+    "k": 12
+  },
+  {
+    "id": 9, "level": "L3 多Chunk聚合",
+    "question": "总结PHP编码规范。",
+    "reference": "包括命名、缩进、注释、SQL命名、软删除、索引规范等。",
+    "keywords": [["命名"], ["缩进"], ["注释"]],
+    "k": 10
+  },
+  {
+    "id": 10, "level": "L3 多Chunk聚合",
+    "question": "总结前端开发规范。",
+    "reference": "Vue3、新业务统一Vue3、CSS放样式文件、ajax规范、console需报备等。",
+    "keywords": [["Vue", "vue"], ["样式", "CSS", "css"]],
+    "k": 10
+  },
+  {
+    "id": 11, "level": "L4 跨文件联查",
+    "question": "AI生成代码有哪些要求？",
+    "reference": "符合编码规范；保持部门风格；人工检查；审核员发现不规范不审核；建议生成需求说明。",
+    "keywords": [["规范"], ["风格", "一致"], ["检查", "审核"]],
+    "k": 8
+  },
+  {
+    "id": 12, "level": "L4 跨文件联查",
+    "question": "service层应该写什么？",
+    "reference": "general仅入口；service处理业务；common仅简单组合。",
+    "keywords": [["业务"], ["入口", "general"], ["common", "组合"]],
+    "k": 18
+  },
+  {
+    "id": 13, "level": "L4 跨文件联查",
+    "question": "完整代码审核流程是什么？",
+    "reference": "开发→报备→审核员审核→组长合并→上线→抽查。",
+    "keywords": [["报备"], ["审核"], ["合并", "上线"]],
+    "k": 8
+  },
+  {
+    "id": 14, "level": "L5 时间推理",
+    "question": "最新规定中控制器接口新增什么要求？",
+    "reference": "每个接口需增加@see接口地址。",
+    "keywords": [["see", "接口地址"]],
+    "k": 12
+  },
+  {
+    "id": 15, "level": "L5 时间推理",
+    "question": "最新工具类放置规范？",
+    "reference": "helper或com-lib，禁止放业务目录。",
+    "keywords": [["helper", "com-lib", "com_lib", "comlib"]],
+    "k": 8
+  },
+  {
+    "id": 16, "level": "L6 条件推理",
+    "question": "什么情况下可以不用审核员审批？",
+    "reference": "不涉及报备且10行以下。",
+    "keywords": [["10", "十"], ["报备"]],
+    "k": 8
+  },
+  {
+    "id": 17, "level": "L6 条件推理",
+    "question": "什么情况需要领导审批？",
+    "reference": "紧急上线。",
+    "keywords": [["紧急"]],
+    "k": 8
+  },
+  {
+    "id": 18, "level": "L7 开放总结",
+    "question": "总结所有AI开发规范。",
+    "reference": "综合编码规范、审核规范、会议纪要进行归纳。",
+    "keywords": [["规范"], ["审核", "检查"]],
+    "k": 12
+  },
+  {
+    "id": 19, "level": "L7 开放总结",
+    "question": "总结代码审核制度演进。",
+    "reference": "按2025-2026会议梳理制度变化。",
+    "keywords": [["审核"], ["2025", "2026"]],
+    "k": 14
+  },
+  {
+    "id": 20, "level": "L8 幻觉测试",
+    "question": "是否要求必须使用PHP8？",
+    "reference": "文档未规定，应回答未找到依据。",
+    "keywords": [["未", "没有", "无法", "不确定", "找不到", "无明确"]]
+  },
+  {
+    "id": 21, "level": "L8 幻觉测试",
+    "question": "Python项目是否必须遵循Java命名？",
+    "reference": "文档未规定，应拒绝臆测。",
+    "keywords": [["未", "没有", "无法", "不", "找不到"]]
+  }
+]

@@ -819,7 +819,23 @@ def main():
 
                 try:
                     # 调用 RAG Pipeline 查询
-                    result = rag_pipeline.query(user_input, k=4)
+                    # 不传 k，使用 pipeline 的默认检索数量（调优后为 6）
+                    result = rag_pipeline.query(user_input)
+
+                    # 【调优新增】低置信度回退
+                    # 如果知识库里根本没有相关内容（low_confidence=True），
+                    # 与其硬邦邦地回「无法回答」，不如切换到普通对话模式，
+                    # 让 AI 用自己的知识正常回答（比如闲聊、通用问题）
+                    if result.get('low_confidence'):
+                        print("  ℹ 知识库中无相关内容，已切换普通对话模式")
+                        if USE_RICH:
+                            console.print("[bold green]🤖 Assistant: [/bold green]", end="")
+                        else:
+                            print("🤖 Assistant: ", end="")
+                        # 走普通对话（session.chat 内部会自动维护历史）
+                        session.chat(user_input, stream=True)
+                        # continue 跳过下面的 RAG 结果展示
+                        continue
 
                     # 显示回答
                     if USE_RICH:
