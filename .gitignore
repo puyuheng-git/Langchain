@@ -50,3 +50,7 @@ Thumbs.db
 
 # Office 临时/锁文件（打开 Word/Excel 时自动生成）
 ~$*
+
+# 测试/脚本运行生成物（不提交 Git）
+# last_report.json 是 run_rag_tests.py 每次运行的输出报告，非源码
+tests/last_report.json
