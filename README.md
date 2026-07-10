@@ -16,6 +16,18 @@
 | **V3** ✅ | 会主动帮你做事 | Agent + 工具调用（搜索/代码/知识库）+ 长期记忆 |
 | **V4** ✅ | 完全属于你的模型 | LoRA 微调 + 图片 OCR + Ollama 本地部署 |
 
+### 🏢 垂直领域扩展：AI 审计工作台
+
+在四阶段底座之上，面向**财务审计 + 内部审计**场景的垂直应用（`audit/` 模块 + Web 界面）：
+
+| 能力 | 说明 |
+|------|------|
+| **合同审阅** | 上传合同 PDF，AI 自动提取 12 个关键要素（签约方/金额/期限/违约/管辖…） |
+| **风险识别** | 从权利对等、惯例偏离、条款缺失、表述模糊四个角度标记 高/中/低 三级风险 |
+| **批量审阅** | 整个目录逐份审 + 跨合同高风险汇总（单份失败不中断整批） |
+| **审计底稿** | 每次审阅自动生成 Markdown 底稿存档（`data/reports/`），可追溯可复核 |
+| **Web 工作台** | Streamlit 可视化界面：拖拽上传 → 要素表格 + 分级风险卡片 → 底稿下载 |
+
 ---
 
 ## 🚀 快速开始
@@ -70,6 +82,8 @@ python main.py
 | `/remember <内容>` | 存入长期记忆（跨对话） | V3 |
 | `/memories` · `/recall <查询>` | 查看 / 召回长期记忆 | V3 |
 | `/reminders` | 查看提醒清单 | V3 |
+| `/review <合同路径>` | 审阅合同：提取要素 + 识别风险 + 生成底稿 | 审计 |
+| `/review <目录>` | 批量审阅目录下所有合同 + 汇总报告 | 审计 |
 | `exit` / `quit` | 退出 | — |
 
 ---
@@ -89,7 +103,23 @@ $ python main.py
 # V3：长期记忆（关掉程序也记得）
 > /remember 我在学习 LangChain 和 LangGraph
 > /recall 我在学什么
+
+# 审计：审阅一份合同（提取要素 + 识别风险 + 生成底稿）
+> /review data/docs/购销合同.pdf
+
+# 审计：批量审阅整个目录（额外生成跨合同汇总）
+> /review data/docs/contracts/
 ```
+
+### 🖥️ 审计工作台 Web 界面
+
+```bash
+# 启动可视化界面（浏览器自动打开 http://localhost:8501）
+streamlit run audit_app.py
+```
+
+- **合同审阅页**：拖拽上传合同（支持多选批量）→ 关键要素表格 + 红/黄/蓝分级风险卡片 → 底稿一键下载
+- **历史底稿页**：浏览/下载过往审阅底稿（与 CLI 版共用 `data/reports/`）
 
 ---
 
@@ -98,7 +128,10 @@ $ python main.py
 ```
 my-brain/
 ├── main.py              # CLI 入口
+├── audit_app.py         # 审计工作台 Web 界面（Streamlit）
 ├── config.py            # 统一配置（从 .env 加载，支持 deepseek/openai/ollama）
+├── CONTEXT.md           # 领域术语表（审计/合同审阅的统一语言）
+├── docs/adr/            # 架构决策记录（ADR）
 ├── chat/                # V1 对话 + V3 记忆
 │   ├── session.py       #   ChatSession 多轮对话管理
 │   └── memory.py        #   LongTermMemory 长期记忆
@@ -108,11 +141,17 @@ my-brain/
 ├── agent/               # V3 智能体
 │   ├── tools.py         #   工具注册表（搜索/代码/知识库/记忆/提醒）
 │   └── graph.py         #   LangGraph 规划→执行→反思
+├── audit/               # 审计工作台（合同审阅）
+│   ├── contract_parser.py   # 合同解析：PDF/TXT/MD → 全文
+│   ├── extractor.py         # 结构化提取：LLM 提取关键字段
+│   ├── risk_analyzer.py     # 风险识别：高/中/低三级风险清单
+│   ├── report_generator.py  # 报告生成：终端表格 + Markdown 底稿
+│   └── pipeline.py          # 管道编排：加载→提取→分析→报告（含批量）
 ├── finetune/            # V4 微调（详见 finetune/README.md）
 │   ├── data_prep.py     #   对话历史 → Alpaca 数据集
 │   ├── train_config.yaml#   LLaMA-Factory LoRA 配置
 │   └── README.md        #   训练 + Ollama 部署完整步骤
-└── data/                # 文档 / 向量库 / 历史（不提交 Git）
+└── data/                # 文档 / 向量库 / 历史 / 审阅底稿（不提交 Git）
 ```
 
 ---
@@ -140,7 +179,7 @@ my-brain/
 | 向量库 | Chroma（本地零配置） |
 | Agent 框架 | LangGraph |
 | 微调 / 部署 | LLaMA-Factory / Ollama |
-| 界面 | CLI（Rich 美化） |
+| 界面 | CLI（Rich 美化）+ Streamlit Web 工作台 |
 
 ---
 

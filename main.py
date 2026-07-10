@@ -63,6 +63,21 @@ from config import Config
 # RAGPipeline 是文档知识库的核心，整合了加载、分块、向量化、检索全流程
 from rag.pipeline import RAGPipeline
 
+# 【审计工作台 新增】导入合同审阅管道
+# ContractReviewPipeline 实现「加载→提取→分析→报告」的确定性审阅流程
+# 只依赖 rag.loader 和 chat.session（都是核心依赖），一般不会导入失败
+# 但仍用 try/except 优雅降级，保持与其他模块一致的健壮性
+try:
+    # 从 audit 包导入合同审阅管道
+    from audit import ContractReviewPipeline
+    # 标志：审计功能是否可用
+    AUDIT_AVAILABLE = True
+except Exception as _audit_import_error:
+    # 导入失败时记录标志和原因
+    AUDIT_AVAILABLE = False
+    # 保存错误信息，稍后给用户提示
+    _AUDIT_IMPORT_ERROR = str(_audit_import_error)
+
 # 【V3 新增】导入 Agent 和长期记忆（可选依赖，用 try/except 优雅降级）
 # KnowledgeAgent 依赖 langgraph、langchain-openai；LongTermMemory 依赖 rag 组件
 # 如果这些库没安装，AGENT_AVAILABLE 会是 False，程序退回到 V1/V2 功能
@@ -172,6 +187,10 @@ def print_help():
   /memories          查看所有长期记忆
   /recall <查询>     测试记忆召回（按语义找相关记忆）
   /reminders         查看提醒清单
+
+  # --- 审计工作台命令 ---
+  /review <合同路径> 审阅合同：提取关键要素 + 识别风险 + 生成底稿
+  /review <目录>     批量审阅目录下所有合同，额外生成汇总报告
 
   /stats             显示对话统计信息
   /model             显示当前模型信息
@@ -466,6 +485,11 @@ def main():
         # 依赖库没装，提示用户（不影响 V1/V2）
         print("ℹ Agent 功能未启用（缺少 langgraph 等依赖）")
         print("  如需使用 /agent，请运行: pip install langgraph langchain-openai tavily-python")
+
+    # 【审计工作台 新增】合同审阅管道（惰性初始化）
+    # 先设为 None，等用户第一次使用 /review 时才真正创建
+    # 好处：不用 /review 的用户不为它付出任何启动时间
+    review_pipeline = None
 
     # ----------------------------------------
     # 步骤 3: 显示欢迎信息
@@ -796,6 +820,52 @@ def main():
                         for r in pending:
                             when_text = f"（{r['when']}）" if r.get("when") else ""
                             print(f"  • {r['task']} {when_text}")
+                continue
+
+            # ========== 【审计工作台 新增】合同审阅命令 ==========
+
+            # 检查是否为 /review 命令（审阅合同）
+            if user_input.startswith('/review '):
+                # 检查审计功能是否可用（导入是否成功）
+                if not AUDIT_AVAILABLE:
+                    print(f"⚠ 审计功能不可用: {_AUDIT_IMPORT_ERROR}")
+                    continue
+
+                # 提取合同文件路径参数
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    # 惰性初始化：第一次使用时才创建管道
+                    # is None 判断：还没创建过就创建一次，之后复用
+                    if review_pipeline is None:
+                        try:
+                            review_pipeline = ContractReviewPipeline()
+                        except Exception as e:
+                            print(f"⚠ 审阅管道初始化失败: {str(e)}")
+                            continue
+
+                    # 取出路径参数（引号在管道内部会被清理）
+                    contract_path = parts[1].strip('"').strip("'")
+                    try:
+                        # 判断路径是文件还是目录，自动选择审阅方式
+                        # Path().is_dir() 判断是否是目录
+                        if Path(contract_path).is_dir():
+                            # 目录 → 批量审阅：逐份审 + 生成汇总报告
+                            result = review_pipeline.review_batch(contract_path)
+                        else:
+                            # 文件 → 单份审阅：完整审阅流程
+                            result = review_pipeline.review(contract_path)
+                        # 致命失败（文件不存在等）时给出使用提示
+                        if not result["success"]:
+                            print("  请检查路径是否正确，支持 PDF/TXT/MD 格式")
+                    except KeyboardInterrupt:
+                        # 允许用户 Ctrl+C 中断长时间的审阅
+                        print("\n[中断] 已取消本次审阅")
+                    except Exception as e:
+                        # 兜底：任何意外错误都不让程序崩溃
+                        print(f"\n[错误] 审阅失败: {str(e)}")
+                else:
+                    print("⚠ 请提供合同路径，例如: /review data/docs/购销合同.pdf")
+                    print("  也可以传目录做批量审阅: /review data/docs/contracts/")
                 continue
 
             # 检查是否为其他以 / 开头的未知命令

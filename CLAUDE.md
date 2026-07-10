@@ -48,6 +48,7 @@ python main.py
 ```
 LangChain/
 ├── main.py              # CLI 入口点
+├── audit_app.py         # 【审计】Streamlit Web 界面入口
 ├── config.py            # 配置管理，从 .env 加载
 ├── .env                 # API Key 等敏感配置（不提交 Git）
 ├── .env.example         # 环境变量模板
@@ -70,6 +71,13 @@ LangChain/
 │   ├── __init__.py
 │   ├── tools.py         # 工具注册表（搜索/代码/知识库/记忆/提醒）
 │   └── graph.py         # LangGraph StateGraph + KnowledgeAgent
+├── audit/               # 【审计工作台】合同审阅模块包
+│   ├── __init__.py
+│   ├── contract_parser.py   # 合同解析：PDF/TXT/MD → 全文
+│   ├── extractor.py         # 结构化提取：LLM 提取关键字段（JSON）
+│   ├── risk_analyzer.py     # 风险识别：LLM 标记异常条款（高/中/低）
+│   ├── report_generator.py  # 报告生成：终端表格 + Markdown 底稿
+│   └── pipeline.py          # 管道编排：加载→提取→分析→报告
 ├── finetune/            # 【V4 新增】微调模块包
 │   ├── __init__.py
 │   ├── data_prep.py     # 对话历史 → Alpaca 格式数据集
@@ -80,6 +88,8 @@ LangChain/
     ├── docs/            # 【V2】用户上传的原始文档
     ├── chroma_db/       # 【V2/V3】向量库（文档 + 长期记忆两个集合）
     ├── history/         # 对话历史存储
+    ├── reports/         # 【审计】合同审阅底稿 + 批量汇总（Markdown）
+    ├── uploads/         # 【审计】Web 界面上传的合同临时存放
     └── reminders.json   # 【V3】提醒清单
 ```
 
@@ -119,6 +129,23 @@ LangChain/
 | `/memories` | 查看所有长期记忆 |
 | `/recall <查询>` | 测试记忆召回（按语义找相关记忆） |
 | `/reminders` | 查看提醒清单 |
+
+### 审计工作台命令
+
+| 命令 | 说明 |
+|------|------|
+| `/review <合同路径>` | 审阅合同：结构化提取关键要素 + 识别风险条款 + 生成 Markdown 底稿（保存到 `data/reports/`） |
+| `/review <目录>` | 批量审阅目录下所有合同（PDF/TXT/MD），每份生成单独底稿，并额外生成批量汇总报告 |
+
+### 审计工作台 Web 界面
+
+```bash
+# 启动可视化界面（浏览器自动打开 http://localhost:8501）
+streamlit run audit_app.py
+```
+
+- 「合同审阅」页：上传合同（支持多选批量）→ 关键要素表格 + 风险清单（红/黄/蓝分级）→ 下载底稿
+- 「历史底稿」页：浏览/下载过往审阅底稿（与 CLI 版共用 `data/reports/`）
 
 ## 使用示例
 
@@ -230,6 +257,24 @@ $ python main.py
 - 复用 Embedder + VectorStore（独立集合 `long_term_memory`）
 - 跨对话记住用户偏好/概念/计划，按语义召回
 - 每条记忆用唯一 `mem_UUID` 作 source，避免 ID 冲突
+
+### 审计层 (audit/) 【审计工作台】
+
+**ContractReviewPipeline (pipeline.py)**
+- 确定性管道：加载 → 提取 → 分析 → 报告，流程固定可追溯（区别于 /agent 的自主规划）
+- `review()` 单份审阅；`review_batch()` 批量审阅（单份失败不中断整批，汇总留痕）
+- 设计决策见 `docs/adr/0001`，领域术语见 `CONTEXT.md`
+
+**四个组件**
+- `ContractParser`：复用 rag.loader 加载合同，拼接全文（不分块，审合同要通读）
+- `ContractExtractor`：LLM 提取 12 个关键字段（签约方/金额/期限/违约/管辖等），严格 JSON 输出，找不到填 null 禁止编造
+- `RiskAnalyzer`：LLM 从权利对等/惯例偏离/条款缺失/表述模糊四个角度识别风险，输出 高/中/低 三级风险清单
+- `ReportGenerator`：终端 Rich 表格展示 + Markdown 底稿存档（`data/reports/`）；批量模式额外生成跨合同风险汇总
+
+**Web 界面 (audit_app.py)**
+- Streamlit 实现，与 CLI 共用同一条 audit 管道（界面与逻辑分离）
+- 上传合同 → 进度条逐份审阅 → 要素表格 + 分级风险卡片 → 底稿下载
+- `@st.cache_resource` 缓存管道实例；`st.session_state` 跨交互保持审阅结果
 
 ### 多模态层 (rag/multimodal.py) 【V4】
 

@@ -302,7 +302,7 @@ class ChatSession:
         # + 运算符用于列表拼接
         self.messages = ([system_message] if system_message else []) + conversation
 
-    def chat(self, user_input: str, stream: bool = True) -> str:
+    def chat(self, user_input: str, stream: bool = True, quiet: bool = False) -> str:
         """
         发送用户消息并获取 AI 回复
 
@@ -316,6 +316,10 @@ class ChatSession:
             user_input: 用户输入的消息文本
             stream: 是否使用流式输出，默认 True
                    流式输出 = 逐字显示，非流式 = 等全部生成后再显示
+            quiet: 是否静默模式，默认 False
+                   静默模式 = 不在终端打印回复，只返回字符串
+                   适合「程序内部调用 LLM」的场景（如审计提取），
+                   原始回复（如 JSON）不需要给用户看
 
         Returns:
             AI 的完整回复内容（字符串）
@@ -363,10 +367,14 @@ class ChatSession:
 
                         # print() 输出内容
                         # end='' 表示不换行，flush=True 表示立即输出（不缓冲）
-                        print(content, end='', flush=True)
+                        # 静默模式下不打印（只累积内容）
+                        if not quiet:
+                            print(content, end='', flush=True)
 
                 # 循环结束，输出换行符，让后续输出从新行开始
-                print()
+                # 静默模式下同样跳过
+                if not quiet:
+                    print()
 
             else:
                 # ========== 非流式输出处理 ==========
@@ -375,8 +383,9 @@ class ChatSession:
                 # .message.content 是 AI 回复的文本
                 assistant_content = response.choices[0].message.content
 
-                # 直接打印完整回复
-                print(assistant_content)
+                # 直接打印完整回复（静默模式下跳过，只返回给调用者）
+                if not quiet:
+                    print(assistant_content)
 
             # 步骤 5: 将 AI 回复添加到历史记录
             # role='assistant' 表示这是 AI 的回复
