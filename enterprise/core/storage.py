@@ -152,11 +152,38 @@ class EnterpriseStore:
             details_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS knowledge_documents (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            department TEXT NOT NULL,
+            document_type TEXT NOT NULL,
+            version TEXT,
+            effective_date TEXT,
+            source_ref TEXT,
+            status TEXT NOT NULL,
+            content TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_cases_updated ON cases(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_executions_case ON executions(case_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_findings_case ON findings(case_id, severity);
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, due_date);
         CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_department ON knowledge_documents(department, document_type);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_source ON knowledge_documents(source_ref);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_source_unique
+            ON knowledge_documents(source_ref)
+            WHERE source_ref IS NOT NULL AND source_ref <> '';
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document ON knowledge_chunks(document_id, position);
         """
         with self._connect() as connection:
             connection.executescript(schema)
@@ -521,13 +548,171 @@ class EnterpriseStore:
             pending_approvals = connection.execute(
                 "SELECT COUNT(*) FROM approvals WHERE status='待审批'"
             ).fetchone()[0]
+            knowledge_count = connection.execute(
+                "SELECT COUNT(*) FROM knowledge_documents WHERE status='有效'"
+            ).fetchone()[0]
         return {
             "case_count": case_count,
             "pending_cases": pending_cases,
             "high_findings": high_findings,
             "open_tasks": open_tasks,
             "pending_approvals": pending_approvals,
+            "knowledge_count": knowledge_count,
         }
+
+    def save_knowledge_document(
+        self,
+        title: str,
+        department: str,
+        document_type: str,
+        content: str,
+        chunks: list[str],
+        *,
+        actor: str,
+        version: str = "",
+        effective_date: str = "",
+        source_ref: str = "",
+        status: str = "有效",
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """新增或按来源更新知识资料及其分块。"""
+
+        now = utc_now()
+        with self._connect() as connection:
+            existing = None
+            if source_ref:
+                existing = connection.execute(
+                    "SELECT id FROM knowledge_documents WHERE source_ref=?", (source_ref,)
+                ).fetchone()
+            document_id = existing["id"] if existing else new_id("knowledge")
+            if existing:
+                connection.execute(
+                    """UPDATE knowledge_documents
+                    SET title=?, department=?, document_type=?, version=?, effective_date=?,
+                        status=?, content=?, metadata_json=?, updated_at=? WHERE id=?""",
+                    (
+                        title,
+                        department,
+                        document_type,
+                        version,
+                        effective_date,
+                        status,
+                        content,
+                        _json(metadata or {}),
+                        now,
+                        document_id,
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM knowledge_chunks WHERE document_id=?", (document_id,)
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO knowledge_documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        document_id,
+                        title,
+                        department,
+                        document_type,
+                        version,
+                        effective_date,
+                        source_ref,
+                        status,
+                        content,
+                        _json(metadata or {}),
+                        now,
+                        now,
+                    ),
+                )
+            connection.executemany(
+                "INSERT INTO knowledge_chunks VALUES (?, ?, ?, ?, ?)",
+                [
+                    (new_id("chunk"), document_id, position, chunk, now)
+                    for position, chunk in enumerate(chunks)
+                ],
+            )
+        self.log(
+            actor,
+            "upsert",
+            "knowledge_document",
+            document_id,
+            {"title": title, "department": department, "document_type": document_type},
+        )
+        return document_id
+
+    def list_knowledge_documents(
+        self,
+        department: str | None = None,
+        document_type: str | None = None,
+        status: str | None = "有效",
+    ) -> list[dict[str, Any]]:
+        """按业务维度列出知识资料。"""
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in (
+            ("department", department),
+            ("document_type", document_type),
+            ("status", status),
+        ):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        query = "SELECT * FROM knowledge_documents"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._decode_knowledge_document(dict(row)) for row in rows]
+
+    def list_knowledge_chunks(
+        self,
+        departments: list[str] | None = None,
+        document_types: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """返回混合检索所需的有效知识分块和文档元数据。"""
+
+        clauses = ["d.status IN ('有效', '规划样本')"]
+        params: list[Any] = []
+        if departments:
+            placeholders = ",".join("?" for _ in departments)
+            clauses.append(f"d.department IN ({placeholders})")
+            params.extend(departments)
+        if document_types:
+            placeholders = ",".join("?" for _ in document_types)
+            clauses.append(f"d.document_type IN ({placeholders})")
+            params.extend(document_types)
+        query = f"""SELECT c.id AS chunk_id, c.position, c.content AS excerpt,
+                    d.id AS document_id, d.title, d.department, d.document_type,
+                    d.version, d.effective_date, d.source_ref, d.metadata_json
+                    FROM knowledge_chunks c
+                    JOIN knowledge_documents d ON d.id=c.document_id
+                    WHERE {' AND '.join(clauses)}"""
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = _loads(item.pop("metadata_json", None), {})
+            output.append(item)
+        return output
+
+    def get_knowledge_document(self, document_id: str) -> dict[str, Any] | None:
+        """读取一份知识资料。"""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_documents WHERE id=?", (document_id,)
+            ).fetchone()
+        return self._decode_knowledge_document(dict(row)) if row else None
+
+    def delete_knowledge_document(self, document_id: str, actor: str) -> None:
+        """删除知识资料并记录操作轨迹。"""
+
+        with self._connect() as connection:
+            connection.execute("DELETE FROM knowledge_documents WHERE id=?", (document_id,))
+        self.log(actor, "delete", "knowledge_document", document_id)
 
     @staticmethod
     def _decode_case(row: dict[str, Any]) -> dict[str, Any]:
@@ -550,4 +735,11 @@ class EnterpriseStore:
         """解析发现项证据字段。"""
 
         row["evidence"] = _loads(row.pop("evidence_json", None), [])
+        return row
+
+    @staticmethod
+    def _decode_knowledge_document(row: dict[str, Any]) -> dict[str, Any]:
+        """解析知识资料元数据。"""
+
+        row["metadata"] = _loads(row.pop("metadata_json", None), {})
         return row

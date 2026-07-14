@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import html
+import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -16,14 +17,15 @@ from typing import Any
 import streamlit as st
 
 from enterprise import EnterpriseStore, ReviewWorkspace
+from enterprise.core.catalog import LEADER_FOCUS, WORKFLOW_GROUPS
+from enterprise.core.knowledge import DEPARTMENTS, DOCUMENT_TYPES
 from enterprise.sample_data import generate_samples
 
-WORKFLOW_GROUPS = {
-    "审计与合同": ["commercial_contract"],
-    "人力管理": ["labor_contract", "recruitment_match"],
-    "行政管理": ["policy_review", "meeting_actions"],
-    "财务管理": ["expense_review", "budget_analysis"],
-}
+STRETCH_KWARGS = (
+    {"width": "stretch"}
+    if "width" in inspect.signature(st.form_submit_button).parameters
+    else {"use_container_width": True}
+)
 
 WORKFLOW_HELP = {
     "commercial_contract": "提取签约方、金额、付款、验收、违约和争议解决条款。",
@@ -93,6 +95,7 @@ def main() -> None:
                 "人力管理",
                 "行政管理",
                 "财务管理",
+                "知识资料库",
                 "任务中心",
                 "历史与复核",
                 "系统管理",
@@ -104,6 +107,8 @@ def main() -> None:
         page_dashboard(workspace)
     elif page in WORKFLOW_GROUPS:
         page_domain(workspace, page, WORKFLOW_GROUPS[page])
+    elif page == "知识资料库":
+        page_knowledge(workspace)
     elif page == "任务中心":
         page_tasks(workspace.store)
     elif page == "历史与复核":
@@ -120,12 +125,13 @@ def page_dashboard(workspace: ReviewWorkspace) -> None:
         unsafe_allow_html=True,
     )
     metrics = workspace.store.dashboard_metrics()
-    columns = st.columns(5)
+    columns = st.columns(6)
     columns[0].metric("累计案件", metrics["case_count"])
     columns[1].metric("待复核案件", metrics["pending_cases"])
     columns[2].metric("待复核高风险", metrics["high_findings"])
     columns[3].metric("未完成任务", metrics["open_tasks"])
     columns[4].metric("待审批", metrics["pending_approvals"])
+    columns[5].metric("正式有效知识", metrics["knowledge_count"])
     st.subheader("业务能力")
     cards = st.columns(4)
     descriptions = [
@@ -156,8 +162,8 @@ def page_dashboard(workspace: ReviewWorkspace) -> None:
                 }
                 for item in recent
             ],
-            use_container_width=True,
             hide_index=True,
+            **STRETCH_KWARGS,
         )
     else:
         st.info("还没有历史案件。请从左侧进入业务模块发起第一项任务。")
@@ -167,8 +173,16 @@ def page_domain(workspace: ReviewWorkspace, group: str, workflow_ids: list[str])
     """渲染一个业务领域的任务发起页。"""
 
     st.markdown(
-        f'<div class="hero"><h1>{group}</h1><p>选择业务流程，上传材料，执行后自动保存案件、原文件、发现项和报告。</p></div>',
+        f'<div class="hero"><h1>{group}</h1><p>以板块总负责人视角联查业务材料、公司章程、部门制度和历史问题。</p></div>',
         unsafe_allow_html=True,
+    )
+    focus_columns = st.columns(4)
+    for column, focus in zip(focus_columns, LEADER_FOCUS[group], strict=True):
+        column.metric(focus, "持续监测")
+    department_documents = workspace.knowledge.list_documents(department=group)
+    company_documents = workspace.knowledge.list_documents(department="公司级")
+    st.caption(
+        f"当前可对照知识：{len(department_documents)} 份本板块资料，{len(company_documents)} 份公司级资料"
     )
     catalog = {item["id"]: item for item in workspace.catalog()}
     workflow_id = st.selectbox(
@@ -226,6 +240,17 @@ def page_domain(workspace: ReviewWorkspace, group: str, workflow_ids: list[str])
             if workflow_id == "meeting_actions"
             else False
         )
+        knowledge_enabled = st.checkbox(
+            "对照知识资料库与历史案例",
+            value=True,
+            help="检索本板块制度、业务规范、公司章程和历史案件，并在结果中保留引用。",
+        )
+        knowledge_types = st.multiselect(
+            "本次对照资料类型",
+            DOCUMENT_TYPES,
+            default=["公司章程", "部门制度", "业务规范", "历史案例", "会议决议"],
+            disabled=not knowledge_enabled,
+        )
         use_ai = st.checkbox(
             "启用 Ollama/本地模型补充管理摘要",
             value=False,
@@ -239,7 +264,7 @@ def page_domain(workspace: ReviewWorkspace, group: str, workflow_ids: list[str])
                     "该授权仅对本次案件生效。系统会先脱敏并记录 external-redacted 路线，但仍建议敏感材料只使用本地模型。"
                 )
         submitted = st.form_submit_button(
-            "保存材料并执行", type="primary", use_container_width=True
+            "保存材料并执行", type="primary", **STRETCH_KWARGS
         )
     if submitted:
         upload_tuples: list[tuple[str, bytes, str]] = []
@@ -260,6 +285,8 @@ def page_domain(workspace: ReviewWorkspace, group: str, workflow_ids: list[str])
             "keywords": keywords,
             "expense_limit": expense_limit,
             "create_tasks": create_tasks,
+            "knowledge_enabled": knowledge_enabled,
+            "knowledge_types": knowledge_types,
         }
         if not upload_tuples:
             st.error("请上传材料或输入会议内容。")
@@ -296,17 +323,24 @@ def render_execution(execution: dict[str, Any], store: EnterpriseStore) -> None:
         columns = st.columns(min(len(metric_items), 5))
         for index, (label, value) in enumerate(metric_items):
             columns[index % len(columns)].metric(label, value)
+    knowledge_matches = result.get("knowledge_matches", [])
     tabs = st.tabs(
-        ["结构化结果", "明细记录", f"风险与发现 ({len(result.get('findings', []))})", "报告与后续"]
+        [
+            "结构化结果",
+            "明细记录",
+            f"风险与发现 ({len(result.get('findings', []))})",
+            f"知识对照 ({len(knowledge_matches)})",
+            "报告与后续",
+        ]
     )
     with tabs[0]:
         fields = result.get("fields", {})
         simple_fields = [{"字段": key, "值": display_value(value)} for key, value in fields.items()]
-        st.dataframe(simple_fields, use_container_width=True, hide_index=True)
+        st.dataframe(simple_fields, hide_index=True, **STRETCH_KWARGS)
     with tabs[1]:
         records = result.get("records", [])
         if records:
-            st.dataframe(records, use_container_width=True, hide_index=True)
+            st.dataframe(records, hide_index=True, **STRETCH_KWARGS)
             st.download_button(
                 "下载明细 JSON",
                 json.dumps(records, ensure_ascii=False, indent=2, default=str),
@@ -318,6 +352,8 @@ def render_execution(execution: dict[str, Any], store: EnterpriseStore) -> None:
     with tabs[2]:
         render_findings(result.get("findings", []))
     with tabs[3]:
+        render_knowledge_matches(knowledge_matches)
+    with tabs[4]:
         st.markdown("### 建议后续动作")
         for action in result.get("suggested_actions", []):
             st.write(f"- {action}")
@@ -332,6 +368,48 @@ def render_execution(execution: dict[str, Any], store: EnterpriseStore) -> None:
         st.caption(
             f"案件编号：{execution['case_id']} · 执行编号：{execution['execution_id']} · 模型路线：{result.get('model_route', 'deterministic')}"
         )
+
+
+def render_knowledge_matches(matches: list[dict[str, Any]]) -> None:
+    """展示分析时实际召回的制度、章程和历史案例证据。"""
+
+    if not matches:
+        st.info("本次未检索到相关知识资料。可在知识资料库补充本板块有效文件。")
+        return
+    for item in matches:
+        score = float(item.get("score", 0))
+        with st.expander(
+            f"{item.get('document_type', '资料')}｜{item.get('title', '')}｜相关度 {score:.1%}",
+            expanded=score >= 0.25,
+        ):
+            columns = st.columns(5)
+            columns[0].write(f"**板块**\n\n{item.get('department', '')}")
+            columns[1].write(f"**版本**\n\n{item.get('version') or '未标注'}")
+            columns[2].write(f"**生效日期**\n\n{item.get('effective_date') or '未标注'}")
+            columns[3].write(f"**定位**\n\n{item.get('locator', '')}")
+            columns[4].write(f"**效力层级**\n\n{item.get('authority_label', '未分级')}")
+            st.write(f"**对照状态：** {item.get('comparison_status', '待核验')}")
+            st.write(item.get("comparison", ""))
+            st.code(item.get("excerpt", ""), language=None)
+            if item.get("related_findings"):
+                st.write("**关联本次发现：** " + "、".join(item["related_findings"]))
+            for current in item.get("current_evidence", []):
+                st.write(f"**当前材料证据｜{current.get('finding', '')}**")
+                for evidence in current.get("evidence", []):
+                    st.caption(f"{evidence.get('source', '')} · {evidence.get('locator', '')}")
+                    st.code(evidence.get("excerpt", ""), language=None)
+            if item.get("matched_terms"):
+                st.caption("命中语义：" + "、".join(item["matched_terms"]))
+            source_ref = item.get("source_ref") or "未标注"
+            st.caption(f"知识来源：{source_ref}")
+            stored_path = item.get("metadata", {}).get("stored_path")
+            if stored_path and Path(stored_path).is_file():
+                st.download_button(
+                    "下载知识原件",
+                    Path(stored_path).read_bytes(),
+                    file_name=item.get("metadata", {}).get("file_name") or Path(stored_path).name,
+                    key=f"knowledge_source_{item.get('chunk_id')}",
+                )
 
 
 def render_findings(findings: list[dict[str, Any]]) -> None:
@@ -367,6 +445,142 @@ def render_findings(findings: list[dict[str, Any]]) -> None:
                     st.code(evidence.get("excerpt", ""), language=None)
             else:
                 st.write("无定位证据")
+
+
+def page_knowledge(workspace: ReviewWorkspace) -> None:
+    """管理并检索四个板块共用的 RAG 知识资料。"""
+
+    st.markdown(
+        '<div class="hero"><h1>知识资料库</h1><p>统一管理公司章程、部门制度、业务规范、会议决议与历史案件记忆。</p></div>',
+        unsafe_allow_html=True,
+    )
+    documents = workspace.knowledge.list_documents()
+    metrics = st.columns(5)
+    for column, department in zip(metrics, DEPARTMENTS, strict=True):
+        count = sum(item["department"] == department for item in documents)
+        column.metric(department, count)
+
+    list_tab, add_tab, search_tab, baseline_tab = st.tabs(
+        ["资料清单", "新增资料", "语义检索", "酒店集团规划基线"]
+    )
+    with list_tab:
+        if documents:
+            st.dataframe(
+                [
+                    {
+                        "标题": item["title"],
+                        "板块": item["department"],
+                        "类型": item["document_type"],
+                        "版本": item["version"] or "未标注",
+                        "生效日期": item["effective_date"] or "未标注",
+                        "状态": item["status"],
+                        "更新时间": item["updated_at"],
+                    }
+                    for item in documents
+                ],
+                hide_index=True,
+                **STRETCH_KWARGS,
+            )
+            selected_id = st.selectbox(
+                "查看或删除资料",
+                [item["id"] for item in documents],
+                format_func=lambda value: next(
+                    item["title"] for item in documents if item["id"] == value
+                ),
+            )
+            selected = next(item for item in documents if item["id"] == selected_id)
+            with st.expander("查看正文"):
+                st.text(selected["content"])
+            if st.button("删除所选资料", type="secondary"):
+                workspace.store.delete_knowledge_document(
+                    selected_id, st.session_state["actor"]
+                )
+                st.success("资料已删除")
+                st.rerun()
+        else:
+            st.info("知识资料库为空。请新增企业有效文件或先装载规划样本。")
+
+    with add_tab:
+        with st.form("add_knowledge"):
+            columns = st.columns(2)
+            department = columns[0].selectbox("归属板块", DEPARTMENTS)
+            document_type = columns[1].selectbox(
+                "资料类型", [item for item in DOCUMENT_TYPES if item != "历史案例"]
+            )
+            title = st.text_input("资料标题", placeholder="例如：费用报销管理制度")
+            version_columns = st.columns(2)
+            version = version_columns[0].text_input("版本", placeholder="V2.1")
+            effective_date = version_columns[1].text_input(
+                "生效日期", placeholder="2026-01-01"
+            )
+            upload = st.file_uploader(
+                "上传文件",
+                type=["pdf", "docx", "txt", "md", "csv", "xlsx", "xlsm"],
+                key="knowledge_upload",
+            )
+            content = st.text_area("或直接粘贴正文", height=220)
+            add_submitted = st.form_submit_button(
+                "保存并建立索引", type="primary", **STRETCH_KWARGS
+            )
+        if add_submitted:
+            try:
+                if upload:
+                    managed_title = title.strip() or upload.name
+                    workspace.knowledge.add_upload(
+                        upload.name,
+                        upload.getvalue(),
+                        department,
+                        document_type,
+                        st.session_state["actor"],
+                        title=managed_title,
+                        version=version,
+                        effective_date=effective_date,
+                        source_ref=f"managed:{department}:{document_type}:{managed_title}",
+                    )
+                elif content.strip():
+                    workspace.knowledge.add_text(
+                        title,
+                        content,
+                        department,
+                        document_type,
+                        st.session_state["actor"],
+                        version=version,
+                        effective_date=effective_date,
+                        source_ref=f"managed:{department}:{document_type}:{title.strip()}",
+                    )
+                else:
+                    raise ValueError("请上传文件或粘贴资料正文")
+                st.success("资料已保存并可用于后续分析")
+                st.rerun()
+            except (ValueError, OSError, ImportError) as exc:
+                st.error(str(exc))
+
+    with search_tab:
+        with st.form("knowledge_search"):
+            query = st.text_input("检索问题", placeholder="例如：招待费超过标准如何审批")
+            search_departments = st.multiselect("检索板块", DEPARTMENTS, default=DEPARTMENTS)
+            search_types = st.multiselect("资料类型", DOCUMENT_TYPES, default=DOCUMENT_TYPES)
+            search_submitted = st.form_submit_button("检索", type="primary")
+        if search_submitted:
+            matches = workspace.knowledge.search(
+                query,
+                departments=search_departments or None,
+                document_types=search_types or None,
+                limit=10,
+            )
+            render_knowledge_matches(matches)
+
+    with baseline_tab:
+        st.warning(
+            "该基线仅用于保利酒店类集团的功能规划与演示，不代表保利酒店现行制度；正式使用前必须替换为企业已审批的有效文件。"
+        )
+        st.write(
+            "基线覆盖公司治理授权、酒店采购与收入审计、劳动用工与关键岗位、印章档案与安全证照、费用支付与经营预算。"
+        )
+        if st.button("装载或更新规划基线", type="primary"):
+            result = workspace.knowledge.seed_hotel_baseline(st.session_state["actor"])
+            st.success(f"已装载 {result['created']} 份规划资料")
+            st.rerun()
 
 
 def page_tasks(store: EnterpriseStore) -> None:
@@ -423,8 +637,8 @@ def render_tasks(store: EnterpriseStore) -> None:
             }
             for item in tasks
         ],
-        use_container_width=True,
         hide_index=True,
+        **STRETCH_KWARGS,
     )
     selected_id = st.selectbox(
         "选择要更新的任务",
@@ -468,8 +682,8 @@ def render_approvals(store: EnterpriseStore, case_id: str | None = None) -> None
             }
             for item in approvals
         ],
-        use_container_width=True,
         hide_index=True,
+        **STRETCH_KWARGS,
     )
     pending = [item for item in approvals if item["status"] == "待审批"]
     if not pending:
@@ -518,8 +732,8 @@ def page_history(workspace: ReviewWorkspace) -> None:
             }
             for item in filtered
         ],
-        use_container_width=True,
         hide_index=True,
+        **STRETCH_KWARGS,
     )
     if not filtered:
         return
@@ -541,7 +755,7 @@ def page_history(workspace: ReviewWorkspace) -> None:
         else ["待人工复核", "补充材料", "已确认", "已关闭", "执行失败"].index(case["status"]),
     )
     if columns[1].button("更新案件状态"):
-        workspace.store.update_case_status(case_id, new_status, st.session_state["actor"])
+        workspace.update_case_status(case_id, new_status, st.session_state["actor"])
         st.success("案件状态已更新")
         st.rerun()
     with st.expander(f"原始附件 ({len(case['artifacts'])})"):
@@ -613,8 +827,8 @@ def page_history(workspace: ReviewWorkspace) -> None:
             }
             for item in findings
         ],
-        use_container_width=True,
         hide_index=True,
+        **STRETCH_KWARGS,
     )
     finding_id = st.selectbox(
         "选择发现项",
@@ -662,7 +876,7 @@ def page_system(workspace: ReviewWorkspace) -> None:
             st.warning("Ollama 当前不可访问。确定性规则、解析和财务计算仍可使用。")
     st.subheader("本地保存位置")
     st.code(
-        f"数据库：{workspace.store.db_path}\n上传文件：{workspace.store.upload_dir}\n报告：{workspace.store.report_dir}\n样本：{workspace.store.sample_dir}"
+        f"数据库：{workspace.store.db_path}\n上传文件：{workspace.store.upload_dir}\n知识原件：{workspace.store.root / 'knowledge_sources'}\n报告：{workspace.store.report_dir}\n样本：{workspace.store.sample_dir}"
     )
     st.subheader("标准 MVP 样本")
     st.write("生成劳动合同、岗位、简历、制度、会议、费用和预算样本，所有人物和金额均为虚构。")

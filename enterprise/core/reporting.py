@@ -70,6 +70,33 @@ def save_markdown_report(
                 "",
             ]
         )
+    if result.knowledge_matches:
+        lines.extend(["## RAG 知识对照", ""])
+        for index, item in enumerate(result.knowledge_matches, start=1):
+            lines.extend(
+                [
+                    f"### {index}. {item.get('title', '')}",
+                    "",
+                    f"- 板块/类型：{item.get('department', '')} / {item.get('document_type', '')}",
+                    f"- 效力层级：{item.get('authority_label', '未分级')}",
+                    f"- 版本：{item.get('version') or '未标注'}",
+                    f"- 相关度：{item.get('score', 0):.1%}",
+                    f"- 定位：{item.get('locator', '')}",
+                    f"- 对照意见：{item.get('comparison', '')}",
+                    f"- 关联本次发现：{'、'.join(item.get('related_findings', [])) or '无直接关联'}",
+                    f"- 知识来源：{item.get('source_ref') or '未标注'}",
+                    f"- 引用原文：{item.get('excerpt', '')}",
+                    "",
+                ]
+            )
+            for current in item.get("current_evidence", []):
+                lines.append(f"- 当前发现：{current.get('finding', '')}")
+                for evidence in current.get("evidence", []):
+                    lines.append(
+                        f"  - 当前材料证据：{evidence.get('source', '')} · "
+                        f"{evidence.get('locator', '')} · {evidence.get('excerpt', '')}"
+                    )
+            lines.append("")
     if result.suggested_actions:
         lines.extend(["## 建议后续动作", ""])
         lines.extend(f"- {action}" for action in result.suggested_actions)

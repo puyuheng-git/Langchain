@@ -93,6 +93,7 @@ class WorkflowResult:
     metrics: dict[str, Any] = field(default_factory=dict)
     findings: list[Finding] = field(default_factory=list)
     suggested_actions: list[str] = field(default_factory=list)
+    knowledge_matches: list[dict[str, Any]] = field(default_factory=list)
     model_route: str = "deterministic"
     warnings: list[str] = field(default_factory=list)
 
@@ -108,6 +109,7 @@ class WorkflowResult:
             "metrics": self.metrics,
             "findings": [item.to_dict() for item in self.findings],
             "suggested_actions": self.suggested_actions,
+            "knowledge_matches": self.knowledge_matches,
             "model_route": self.model_route,
             "warnings": self.warnings,
         }

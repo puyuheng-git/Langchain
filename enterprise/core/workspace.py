@@ -13,6 +13,8 @@ from enterprise.domains.contract import CommercialContractWorkflow
 from enterprise.domains.finance import BudgetAnalysisWorkflow, ExpenseReviewWorkflow
 from enterprise.domains.hr import LaborContractWorkflow, RecruitmentMatchWorkflow
 
+from .catalog import WORKFLOW_DEPARTMENTS
+from .knowledge import KnowledgeBase, build_analysis_query, compare_analysis_matches
 from .models import ExecutionResult
 from .reporting import save_markdown_report
 from .storage import EnterpriseStore
@@ -29,6 +31,7 @@ class ReviewWorkspace:
         """初始化默认仓储、模型网关和工作流注册表。"""
 
         self.store = store or EnterpriseStore()
+        self.knowledge = KnowledgeBase(self.store)
         self.model_gateway = model_gateway or ModelGateway()
         workflows: list[Workflow] = [
             CommercialContractWorkflow(),
@@ -137,6 +140,19 @@ class ReviewWorkspace:
         try:
             documents = [parse_document(path) for path in paths]
             result = workflow.execute(documents, options, self.model_gateway)
+            if options.get("knowledge_enabled", True):
+                department = WORKFLOW_DEPARTMENTS[workflow.workflow_id]
+                result.knowledge_matches = compare_analysis_matches(
+                    result,
+                    self.knowledge.search(
+                        build_analysis_query(result, documents),
+                        departments=[department, "公司级"],
+                        document_types=options.get("knowledge_types") or None,
+                        limit=int(options.get("knowledge_limit", 6)),
+                        exclude_source_ref=case_id,
+                    ),
+                    documents,
+                )
             payload = result.to_dict()
             report_path = save_markdown_report(self.store.report_dir, case_id, execution_id, result)
             self.store.complete_execution(
@@ -151,6 +167,41 @@ class ReviewWorkspace:
             self.store.fail_execution(execution_id, case_id, str(exc), actor)
             return ExecutionResult(
                 False, case_id, execution_id, workflow.workflow_id, error=str(exc)
+            )
+
+    def update_case_status(self, case_id: str, status: str, actor: str) -> None:
+        """更新案件状态，并仅把负责人确认后的案件沉淀为历史记忆。"""
+
+        self.store.update_case_status(case_id, status, actor)
+        if status not in {"已确认", "已关闭"}:
+            return
+        case = self.store.get_case(case_id)
+        if not case or not case["executions"] or not case["executions"][0].get("result"):
+            return
+        latest_execution = case["executions"][0]
+        result = latest_execution["result"]
+        latest_findings = [
+            item
+            for item in case["findings"]
+            if item["execution_id"] == latest_execution["id"]
+            and item["review_status"] in {"已接受", "已整改"}
+        ]
+        try:
+            self.knowledge.remember_case(
+                case_id,
+                case["workflow_id"],
+                result.get("title") or case["title"],
+                result.get("summary", ""),
+                latest_findings,
+                actor,
+            )
+        except Exception as memory_error:
+            self.store.log(
+                actor,
+                "memory_failure",
+                "case",
+                case_id,
+                {"error": str(memory_error)},
             )
 
     def _record_preparation_failure(
