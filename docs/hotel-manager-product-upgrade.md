@@ -212,7 +212,7 @@ enterprise/hotel/
 
 ### 引入数据库迁移
 
-当前通过 `CREATE TABLE IF NOT EXISTS` 初始化表结构，适合 MVP，但无法可靠演进经营数据模型。新增经营表之前应建立可重复的 schema migration，并为升级、失败回滚和备份恢复编写测试。
+当前通过 `CREATE TABLE IF NOT EXISTS` 初始化表结构，适合 MVP，但无法可靠演进经营数据模型。新增经营表之前应建立可重复的 schema migration，并为升级和失败回滚编写测试；备份恢复测试随 P2 本地可靠性能力一并交付。
 
 ### 建立计算与预测评测集
 
