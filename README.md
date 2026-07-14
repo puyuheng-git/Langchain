@@ -1,233 +1,254 @@
-# 🏢 企业智能管理工作台 + AI 知识库助手
+# 企业智能管理工作台
 
-当前主入口是面向业务人员的 Streamlit 操作台，覆盖审计与合同、人力、行政和财务。所有上传、分析、发现项、任务和人工复核均保存在本机，可在下次启动后继续查看。
+本项目是一个本地优先的企业业务审阅与管理工作台，覆盖审计与合同、人力、行政和财务场景。
+
+业务人员通过 Streamlit 浏览器界面上传材料。系统会保存原始文件、结构化结果、风险发现、报告、任务、审批及人工复核记录，下次启动后可以继续查看和处理。
+
+原有 AI 知识库、RAG、Agent、长期记忆和合同 `/review` 命令继续保留。
+
+## 核心能力
+
+| 领域 | 工作流 | 主要结果 |
+|---|---|---|
+| 审计与合同 | 商业合同审阅 | 签约方、金额、付款、验收、违约、争议解决和异常条款 |
+| 人力 | 劳动合同审阅 | 合同期限、工资、工时、社保、试用期、竞业限制和生命周期建议 |
+| 人力 | 招聘匹配 | 技能、经验、项目、行业证据评分，支持盲审，不自动淘汰候选人 |
+| 行政 | 制度审阅 | 制度版本、范围、归口、审批、职责分离、例外和留存规则 |
+| 行政 | 会议事项 | 决定、负责人、截止日期、逾期风险和任务中心同步 |
+| 财务 | 费用审阅 | 重复票据、限额、预算、附件、日期、拆分报销和审批冲突 |
+| 财务 | 预算分析 | 执行率、余额、差异、超支、零预算支出和低执行项目 |
+
+操作台还提供：
+
+- 统一案件历史和原始附件下载；
+- 高、中、低风险发现及来源证据；
+- Markdown 报告和 JSON 明细下载；
+- 会议任务与人工任务跟踪；
+- 最终动作审批及申请人/审批人职责分离；
+- 逐条人工复核、整改和案件状态管理；
+- 虚构标准样本生成。
+
+## 数据与 AI 安全
+
+专业流程采用固定的确定性管道：
+
+```text
+归档文件 -> 本地解析 -> 结构化提取 -> 确定性规则/计算
+         -> 可选模型摘要 -> 持久化 -> 报告 -> 人工复核
+```
+
+- 员工、简历、工资、劳动合同、发票、费用和预算按 L3 敏感数据处理。
+- 内部制度和会议纪要按 L2 数据处理。
+- 默认不调用模型，文档解析、规则检查和财务计算仍可完整运行。
+- 启用 AI 时优先调用 Ollama 本地模型。
+- 本地模型失败后不会静默外发。
+- 只有用户在单次操作中明确授权，系统才会先脱敏，再调用外部模型。
+- 财务权威数字始终由本地代码计算，大模型不得覆盖。
+- Agent 任意 Python 代码执行默认关闭。
+
+系统不会自动完成以下最终决定：
+
+- 录用或淘汰候选人；
+- 签署商业合同或劳动合同；
+- 发布制度；
+- 批准费用或执行付款；
+- 调整预算；
+- 关闭风险和整改事项。
+
+## 快速开始
+
+### 环境要求
+
+- Python 3.11 及以上；
+- Windows、macOS 或 Linux；
+- Ollama 为可选依赖，未安装时仍可使用全部确定性功能。
+
+### 安装依赖
+
+使用 `pip`：
 
 ```powershell
 python -m pip install -r requirements.txt
+```
+
+或使用已提交的 `uv.lock` 创建可复现环境：
+
+```powershell
+uv sync --extra legacy --extra dev
+```
+
+### 配置
+
+```powershell
+Copy-Item .env.example .env
+```
+
+只使用本地确定性分析时，不需要配置任何 API Key。
+
+使用 Ollama 时，在 `.env` 中配置：
+
+```dotenv
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_MODEL=qwen2.5:7b
+ENTERPRISE_MODEL_TIMEOUT=20
+```
+
+然后准备本地模型：
+
+```powershell
+ollama pull qwen2.5:7b
+```
+
+外部模型是可选项，且只有页面单次明确授权后才会使用：
+
+```dotenv
+ENTERPRISE_EXTERNAL_PROVIDER=deepseek
+ENTERPRISE_EXTERNAL_MODEL=deepseek-chat
+DEEPSEEK_API_KEY=your_key_here
+```
+
+### 启动操作台
+
+```powershell
 streamlit run enterprise_app.py
 ```
 
-浏览器操作台包含：
+浏览器访问：
 
-- 商业合同和劳动合同审阅；
-- 招聘匹配（证据评分、盲审、不自动淘汰）；
-- 制度审阅和会议行动项；
-- 费用审阅和预算分析；
-- 统一任务中心、历史记录、附件下载和人工复核；
-- Ollama 本地优先，以及明确授权后的脱敏外部调用。
-
-完整说明见 [企业工作台使用说明](docs/enterprise-workbench.md)。原 CLI 知识库助手与 `/review` 命令继续保留。
-
----
-
-# 🤖 个人 AI 知识库助手（my-brain）
-
-> 一个项目，四次进化，构建你的 AI 第二大脑。
-
-从一个命令行聊天机器人，逐步进化为**会读文档、会主动做事、完全属于你**的私人 AI 助手。
-面向 Python 初学者，代码逐行中文注释，边做边学。
-
----
-
-## ✨ 四个阶段
-
-| 版本 | 主题 | 能力 |
-|------|------|------|
-| **V1** ✅ | 会聊天的笔记本 | 多轮对话、角色切换、流式输出、历史保存 |
-| **V2** ✅ | 能读懂你的文档 | RAG 向量知识库、语义检索、来源引用 |
-| **V3** ✅ | 会主动帮你做事 | Agent + 工具调用（搜索/代码/知识库）+ 长期记忆 |
-| **V4** ✅ | 完全属于你的模型 | LoRA 微调 + 图片 OCR + Ollama 本地部署 |
-
-### 🏢 垂直领域扩展：AI 审计工作台
-
-在四阶段底座之上，面向**财务审计 + 内部审计**场景的垂直应用（`audit/` 模块 + Web 界面）：
-
-| 能力 | 说明 |
-|------|------|
-| **合同审阅** | 上传合同 PDF，AI 自动提取 12 个关键要素（签约方/金额/期限/违约/管辖…） |
-| **风险识别** | 从权利对等、惯例偏离、条款缺失、表述模糊四个角度标记 高/中/低 三级风险 |
-| **批量审阅** | 整个目录逐份审 + 跨合同高风险汇总（单份失败不中断整批） |
-| **审计底稿** | 每次审阅自动生成 Markdown 底稿存档（`data/reports/`），可追溯可复核 |
-| **Web 工作台** | Streamlit 可视化界面：拖拽上传 → 要素表格 + 分级风险卡片 → 底稿下载 |
-
----
-
-## 🚀 快速开始
-
-### 1. 安装依赖
-
-```bash
-# 需要 Python 3.11+
-pip install -r requirements.txt
+```text
+http://localhost:8501
 ```
 
-### 2. 配置 API Key
+原审计入口已兼容到同一操作台：
 
-```bash
-# 复制配置模板
-cp .env.example .env      # Windows: copy .env.example .env
-```
-
-然后编辑 `.env`，至少填入 **DeepSeek API Key**（[注册地址](https://platform.deepseek.com)，国内可直接用）：
-
-```bash
-DEEPSEEK_API_KEY=sk-你的密钥
-```
-
-> 想用 V2 知识库？再填 `OPENAI_API_KEY`（或[硅基流动](https://cloud.siliconflow.cn) Key）做 Embedding。
-> 想用 V3 网页搜索？再填 `TAVILY_API_KEY`（[免费 1000 次/月](https://tavily.com)）。
-
-### 3. 运行
-
-```bash
-python main.py
-```
-
-> 💡 中文 Windows 若遇到 emoji 编码报错，运行前设 `set PYTHONUTF8=1`（或用支持 UTF-8 的终端/IDE）。
-
----
-
-## 💬 CLI 命令
-
-| 命令 | 说明 | 版本 |
-|------|------|------|
-| `/help` | 显示帮助 | V1 |
-| `/system <prompt>` | 切换 AI 角色 | V1 |
-| `/clear` | 清空对话历史 | V1 |
-| `/save [名称]` | 保存对话到 `data/history/` | V1 |
-| `/history` · `/load <文件>` | 查看 / 加载历史对话 | V1 |
-| `/stats` · `/model` | 查看统计 / 当前模型 | V1 |
-| `/ingest <路径>` | 索引文档（PDF/TXT/MD） | V2 |
-| `/docs` · `/delete <名>` | 查看 / 删除已索引文档 | V2 |
-| `/search <关键词>` | 测试检索（不生成回答） | V2 |
-| `/agent <任务>` | 让智能体规划+调用工具完成任务 | V3 |
-| `/remember <内容>` | 存入长期记忆（跨对话） | V3 |
-| `/memories` · `/recall <查询>` | 查看 / 召回长期记忆 | V3 |
-| `/reminders` | 查看提醒清单 | V3 |
-| `/review <合同路径>` | 审阅合同：提取要素 + 识别风险 + 生成底稿 | 审计 |
-| `/review <目录>` | 批量审阅目录下所有合同 + 汇总报告 | 审计 |
-| `exit` / `quit` | 退出 | — |
-
----
-
-## 📖 使用示例
-
-```bash
-$ python main.py
-
-# V2：加文档后自动基于文档回答
-> /ingest data/docs/python_tutorial.pdf
-> Python 的装饰器是什么？          # 自动检索文档并附来源引用
-
-# V3：让智能体自主做事（多步骤）
-> /agent 帮我查一下 LangGraph 是什么，并总结成笔记存进知识库
-
-# V3：长期记忆（关掉程序也记得）
-> /remember 我在学习 LangChain 和 LangGraph
-> /recall 我在学什么
-
-# 审计：审阅一份合同（提取要素 + 识别风险 + 生成底稿）
-> /review data/docs/购销合同.pdf
-
-# 审计：批量审阅整个目录（额外生成跨合同汇总）
-> /review data/docs/contracts/
-```
-
-### 🖥️ 审计工作台 Web 界面
-
-```bash
-# 启动可视化界面（浏览器自动打开 http://localhost:8501）
+```powershell
 streamlit run audit_app.py
 ```
 
-- **合同审阅页**：拖拽上传合同（支持多选批量）→ 关键要素表格 + 红/黄/蓝分级风险卡片 → 底稿一键下载
-- **历史底稿页**：浏览/下载过往审阅底稿（与 CLI 版共用 `data/reports/`）
+## 操作流程
 
----
+1. 在左侧填写当前操作人。
+2. 进入审计与合同、人力、行政或财务模块。
+3. 选择业务流程并上传材料。
+4. 按需启用 Ollama 或授权脱敏外部调用。
+5. 点击“保存材料并执行”。
+6. 查看结构化结果、明细、风险、证据和报告。
+7. 在“历史与复核”记录人工结论或重新执行。
+8. 在“任务中心”跟踪行动项和最终动作审批。
 
-## 🗂️ 项目结构
+## 数据保存
 
-```
-my-brain/
-├── main.py              # CLI 入口
-├── audit_app.py         # 审计工作台 Web 界面（Streamlit）
-├── config.py            # 统一配置（从 .env 加载，支持 deepseek/openai/ollama）
-├── CONTEXT.md           # 领域术语表（审计/合同审阅的统一语言）
-├── docs/adr/            # 架构决策记录（ADR）
-├── chat/                # V1 对话 + V3 记忆
-│   ├── session.py       #   ChatSession 多轮对话管理
-│   └── memory.py        #   LongTermMemory 长期记忆
-├── rag/                 # V2 检索增强 + V4 多模态
-│   ├── loader/chunker/embedder/vectorstore/retriever/pipeline.py
-│   └── multimodal.py    #   图片 OCR → 入库
-├── agent/               # V3 智能体
-│   ├── tools.py         #   工具注册表（搜索/代码/知识库/记忆/提醒）
-│   └── graph.py         #   LangGraph 规划→执行→反思
-├── audit/               # 审计工作台（合同审阅）
-│   ├── contract_parser.py   # 合同解析：PDF/TXT/MD → 全文
-│   ├── extractor.py         # 结构化提取：LLM 提取关键字段
-│   ├── risk_analyzer.py     # 风险识别：高/中/低三级风险清单
-│   ├── report_generator.py  # 报告生成：终端表格 + Markdown 底稿
-│   └── pipeline.py          # 管道编排：加载→提取→分析→报告（含批量）
-├── finetune/            # V4 微调（详见 finetune/README.md）
-│   ├── data_prep.py     #   对话历史 → Alpaca 数据集
-│   ├── train_config.yaml#   LLaMA-Factory LoRA 配置
-│   └── README.md        #   训练 + Ollama 部署完整步骤
-└── data/                # 文档 / 向量库 / 历史 / 审阅底稿（不提交 Git）
+默认数据保存在 `data/enterprise/`，该目录已被 Git 忽略：
+
+```text
+data/enterprise/
+├── enterprise.db       # 案件、执行、发现、任务、审批、人工复核和审计日志
+├── uploads/<case_id>/  # 每次上传的原始文件
+├── reports/            # Markdown 报告
+└── samples/            # 虚构标准样本及 expected.json
 ```
 
----
+每个上传文件都会：
 
-## 🧠 核心概念速览
+- 清理文件名，阻止路径穿越；
+- 归档到独立案件目录；
+- 计算 SHA-256；
+- 与执行结果和操作人关联；
+- 在执行失败时保留错误记录。
 
-- **RAG（检索增强生成）**：先检索相关文档，再基于文档生成回答，让 AI 能用你的私有资料
-- **Embedding（向量化）**：把文本变成向量，语义相近的文本向量距离也近，是语义检索的基础
-- **Agent（智能体）**：能主动「规划 → 调用工具 → 观察结果 → 再规划」，而不只是被动应答
-- **LangGraph**：用有向图编排 Agent 的规划/执行/反思流程，比传统方式更可控
-- **长期记忆**：跨对话持久化的用户偏好/计划，存在 Chroma 里按语义召回
-- **微调 vs RAG**：RAG 更新「知道什么」，微调改变「说话风格/行为」，二者互补
-- **LoRA / Ollama**：LoRA 高效微调只训练少量参数；Ollama 一条命令本地跑模型，数据不出本机
+## 标准样本
 
----
+在“系统管理”中点击“生成或更新标准样本”，系统会生成：
 
-## 🛠️ 技术栈
+- 20 份劳动合同；
+- 5 份岗位说明；
+- 30 份简历；
+- 10 份制度；
+- 20 份会议纪要；
+- 200 条费用记录；
+- 49 条预算与实际记录；
+- 一份机器可读的 `expected.json`。
 
-| 类别 | 选用 |
-|------|------|
-| 语言 | Python 3.11+ |
-| 主力模型 | DeepSeek API（中文优，价格约 OpenAI 的 1/10） |
-| Embedding | text-embedding-3-small / bge-m3 |
-| RAG 框架 | LangChain |
-| 向量库 | Chroma（本地零配置） |
-| Agent 框架 | LangGraph |
-| 微调 / 部署 | LLaMA-Factory / Ollama |
-| 界面 | CLI（Rich 美化）+ Streamlit Web 工作台 |
+所有样本中的人物、单位、账号和金额均为虚构数据。
 
----
+## 原知识库助手
 
-## 📦 V4：训练你的专属模型
+原 CLI 入口仍然可用：
 
-V4 涉及 GPU 训练与本地部署，完整步骤（数据准备 → AutoDL 微调 → 量化 → Ollama 部署 → 接回项目）见
-👉 **[finetune/README.md](finetune/README.md)**
-
-训练完成后，只需在 `.env` 改一行即可调用你的本地模型：
-
-```bash
-LLM_PROVIDER=ollama
-OLLAMA_MODEL=my-brain
+```powershell
+python main.py
 ```
 
----
+常用命令：
 
-## ⚠️ 注意事项
+| 命令 | 说明 |
+|---|---|
+| `/ingest <路径>` | 将 PDF、TXT 或 Markdown 加入知识库 |
+| `/docs` | 查看已索引文档 |
+| `/search <查询>` | 只执行知识库检索 |
+| `/agent <任务>` | 使用 LangGraph Agent；任意代码工具默认关闭 |
+| `/remember <内容>` | 保存长期记忆 |
+| `/review <文件或目录>` | 使用统一工作区审阅商业合同并保存历史 |
 
-1. **API Key 安全**：真实密钥只放 `.env`（已被 `.gitignore` 忽略），永不提交 Git
-2. **Token 成本**：注意 `.env` 中的 `MAX_HISTORY_TOKENS`，历史越长调用越贵
-3. **网络**：DeepSeek 国内可直接访问；OpenAI 可用硅基流动等兼容平台替代
-4. **可选依赖优雅降级**：缺某个库时对应功能自动禁用并给出提示，不影响其他功能
+RAG 重复入库会先删除同来源的旧分块，避免修改后的文档继续检索到过期内容。Embedding 维度读取不会在初始化阶段发送测试 API 请求。
 
----
+## 项目结构
 
-## 📄 许可
+```text
+.
+├── enterprise_app.py       # 企业操作台入口
+├── audit_app.py            # 兼容入口
+├── enterprise/
+│   ├── core/               # 统一模型、工作区、SQLite、报告
+│   ├── ai/                 # Ollama/外部模型网关和脱敏
+│   ├── adapters/           # PDF、DOCX、TXT、CSV、XLSX 解析
+│   ├── domains/            # 合同、人力、行政、财务工作流
+│   └── sample_data.py      # 标准样本生成器
+├── audit/                  # 原合同审阅兼容包
+├── rag/                    # RAG 与 Chroma 向量库
+├── agent/                  # LangGraph Agent 和工具
+├── chat/                   # 对话与长期记忆
+├── finetune/               # LoRA 数据准备和训练配置
+├── tests/                  # 工作区、财务计算、安全和 RAG 回归测试
+├── docs/                   # 使用说明和 ADR
+├── pyproject.toml          # 项目和工具配置
+└── uv.lock                 # 锁定依赖
+```
 
-个人学习项目，欢迎参考学习。
+## 开发与验证
+
+```powershell
+ruff check enterprise enterprise_app.py audit/pipeline.py audit_app.py
+python -m pytest -q
+```
+
+当前自动化测试覆盖：
+
+- 七个业务流程离线执行；
+- 上传持久化和案件重新执行；
+- 失败操作留痕；
+- 敏感信息脱敏；
+- 费用和预算权威计算；
+- 审批职责分离；
+- RAG 同来源重复入库替换；
+- Embedding 初始化不发网络请求。
+
+## 当前边界
+
+当前版本是单机 MVP。“当前操作人”用于留痕和职责分离演示，不是正式身份认证。
+
+部署到多用户局域网或生产环境前，需要增加：
+
+- 统一登录和服务端 RBAC；
+- PostgreSQL 等服务端数据库；
+- 数据库备份、恢复和加密；
+- 文件病毒扫描与更严格的上传限制；
+- 不可篡改审计日志；
+- 正式审批权限、电子签章和财务系统集成。
+
+## 文档
+
+- [企业工作台使用说明](docs/enterprise-workbench.md)
+- [ADR-0001：审阅采用确定性专用管道](docs/adr/0001-review-command-architecture.md)
+- [ADR-0003：统一持久化工作区与本地优先模型网关](docs/adr/0003-enterprise-workbench-architecture.md)
+- [LoRA 微调说明](finetune/README.md)
