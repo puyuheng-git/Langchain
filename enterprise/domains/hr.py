@@ -395,6 +395,7 @@ def _ai_management_summary(
 
     if not options.get("use_ai", True):
         return
+    sensitivity = str(options.get("_sensitivity", sensitivity))
     combined = "\n\n".join(document.text[:6000] for document in documents)
     response = gateway.run_json(
         task=result.workflow_id,

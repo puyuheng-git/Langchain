@@ -137,7 +137,7 @@ def _apply_ai_summary(
         task="commercial_contract_summary",
         system_prompt='你是合同审阅助手。只返回 JSON：{"management_summary":"..."}。不得给出最终法律结论。',
         user_content=f"合同内容：\n{document.text[:12000]}\n\n规则摘要：{result.summary}",
-        sensitivity="L2",
+        sensitivity=str(options.get("_sensitivity", "L2")),
         allow_external=bool(options.get("allow_external", False)),
     )
     if response.success and response.data and response.data.get("management_summary"):

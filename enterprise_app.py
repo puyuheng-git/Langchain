@@ -11,14 +11,16 @@ from __future__ import annotations
 import html
 import inspect
 import json
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import streamlit as st
 
 from enterprise import EnterpriseStore, ReviewWorkspace
 from enterprise.core.catalog import LEADER_FOCUS, WORKFLOW_GROUPS
 from enterprise.core.knowledge import DEPARTMENTS, DOCUMENT_TYPES
+from enterprise.core.settings import SECRET_SETTING_KEYS, SECURITY_POLICY_OPTIONS
 from enterprise.sample_data import generate_samples
 
 STRETCH_KWARGS = (
@@ -96,6 +98,7 @@ def main() -> None:
                 "行政管理",
                 "财务管理",
                 "知识资料库",
+                "运行监控",
                 "任务中心",
                 "历史与复核",
                 "系统管理",
@@ -109,12 +112,100 @@ def main() -> None:
         page_domain(workspace, page, WORKFLOW_GROUPS[page])
     elif page == "知识资料库":
         page_knowledge(workspace)
+    elif page == "运行监控":
+        page_monitor(workspace.store)
     elif page == "任务中心":
         page_tasks(workspace.store)
     elif page == "历史与复核":
         page_history(workspace)
     else:
         page_system(workspace)
+
+
+def execute_logged_operation(
+    store: EnterpriseStore,
+    event_type: str,
+    title: str,
+    callback: Callable[[], Any],
+    details: dict[str, Any] | None = None,
+) -> Any:
+    """执行一个页面操作，并把开始、成功或失败状态写入运行监控。"""
+
+    event_id = ""
+    try:
+        event_id = store.start_runtime_event(
+            category="operation",
+            event_type=event_type,
+            title=title,
+            actor=st.session_state.get("actor", "本地用户"),
+            details=details,
+        )
+    except Exception:
+        pass
+    try:
+        result = callback()
+        success = bool(getattr(result, "success", True))
+        result_details: dict[str, Any] = {}
+        for key in ("case_id", "execution_id", "error"):
+            value = getattr(result, key, None)
+            if value:
+                result_details[key] = value
+        if event_id:
+            try:
+                store.complete_runtime_event(
+                    event_id,
+                    "成功" if success else "失败",
+                    result_details,
+                )
+            except Exception:
+                pass
+        return result
+    except Exception as exc:
+        if event_id:
+            try:
+                store.complete_runtime_event(event_id, "失败", {"error": str(exc)})
+            except Exception:
+                pass
+        raise
+
+
+def log_rejected_operation(
+    store: EnterpriseStore, event_type: str, title: str, reason: str
+) -> None:
+    """记录因页面校验未通过而没有进入后台处理的按钮操作。"""
+
+    try:
+        event_id = store.start_runtime_event(
+            category="operation",
+            event_type=event_type,
+            title=title,
+            actor=st.session_state.get("actor", "本地用户"),
+            details={"validation_error": reason},
+        )
+        store.complete_runtime_event(event_id, "失败", {"error": reason})
+    except Exception:
+        pass
+
+
+def log_quick_operation(
+    store: EnterpriseStore,
+    event_type: str,
+    title: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """记录下载、刷新等不需要后台回调结果的即时操作。"""
+
+    try:
+        event_id = store.start_runtime_event(
+            category="operation",
+            event_type=event_type,
+            title=title,
+            actor=st.session_state.get("actor", "本地用户"),
+            details=details,
+        )
+        store.complete_runtime_event(event_id, "成功")
+    except Exception:
+        pass
 
 
 def page_dashboard(workspace: ReviewWorkspace) -> None:
@@ -188,6 +279,8 @@ def page_domain(workspace: ReviewWorkspace, group: str, workflow_ids: list[str])
     workflow_id = st.selectbox(
         "业务流程", workflow_ids, format_func=lambda value: catalog[value]["label"]
     )
+    workflow_sensitivity = catalog[workflow_id]["sensitivity"]
+    security_policy = workspace.model_gateway.settings()["security_levels"][workflow_sensitivity]
     st.caption(WORKFLOW_HELP[workflow_id])
     with st.form(f"execute_{workflow_id}", clear_on_submit=False):
         title = st.text_input("案件标题（可选）", placeholder="留空时自动使用文件名")
@@ -252,16 +345,27 @@ def page_domain(workspace: ReviewWorkspace, group: str, workflow_ids: list[str])
             disabled=not knowledge_enabled,
         )
         use_ai = st.checkbox(
-            "启用 Ollama/本地模型补充管理摘要",
+            "启用本地模型补充管理摘要",
             value=False,
             help="不启用模型时，结构化提取、规则检查和财务计算仍可完整运行。",
         )
         allow_external = False
         if use_ai:
-            allow_external = st.checkbox("本地模型失败时，允许脱敏后调用外部模型", value=False)
+            st.caption(
+                f"当前安全等级：{workflow_sensitivity}｜{security_policy['name']}｜"
+                f"{SECURITY_POLICY_OPTIONS[security_policy['policy']]}"
+            )
+            external_permitted = security_policy["policy"] != "local_only"
+            allow_external = st.checkbox(
+                "本地模型失败时，允许脱敏后调用外部模型",
+                value=False,
+                disabled=not external_permitted,
+            )
+            if not external_permitted:
+                st.info("当前等级配置为仅本地处理，本次不能启用外部模型。")
             if allow_external:
                 st.warning(
-                    "该授权仅对本次案件生效。系统会先脱敏并记录 external-redacted 路线，但仍建议敏感材料只使用本地模型。"
+                    "该授权仅对本次案件生效。所有外部调用都会先执行基础脱敏，并记录 external-redacted 路线。"
                 )
         submitted = st.form_submit_button(
             "保存材料并执行", type="primary", **STRETCH_KWARGS
@@ -289,11 +393,27 @@ def page_domain(workspace: ReviewWorkspace, group: str, workflow_ids: list[str])
             "knowledge_types": knowledge_types,
         }
         if not upload_tuples:
+            log_rejected_operation(
+                workspace.store,
+                "execute_workflow",
+                f"执行工作流｜{catalog[workflow_id]['label']}",
+                "未上传材料或输入会议内容",
+            )
             st.error("请上传材料或输入会议内容。")
         else:
             with st.spinner("正在归档文件并执行本地分析……"):
-                execution = workspace.execute_uploads(
-                    workflow_id, upload_tuples, st.session_state["actor"], title, options
+                execution = execute_logged_operation(
+                    workspace.store,
+                    "execute_workflow",
+                    f"执行工作流｜{catalog[workflow_id]['label']}",
+                    lambda: workspace.execute_uploads(
+                        workflow_id,
+                        upload_tuples,
+                        st.session_state["actor"],
+                        title,
+                        options,
+                    ),
+                    {"workflow_id": workflow_id, "file_count": len(upload_tuples)},
                 )
             st.session_state["last_execution"] = execution.to_dict()
             if execution.success:
@@ -346,13 +466,20 @@ def render_execution(execution: dict[str, Any], store: EnterpriseStore) -> None:
                 json.dumps(records, ensure_ascii=False, indent=2, default=str),
                 file_name=f"{execution['execution_id']}_records.json",
                 mime="application/json",
+                on_click=log_quick_operation,
+                args=(
+                    store,
+                    "download_records",
+                    "下载分析明细",
+                    {"execution_id": execution["execution_id"]},
+                ),
             )
         else:
             st.info("该流程没有明细记录。")
     with tabs[2]:
         render_findings(result.get("findings", []))
     with tabs[3]:
-        render_knowledge_matches(knowledge_matches)
+        render_knowledge_matches(knowledge_matches, store)
     with tabs[4]:
         st.markdown("### 建议后续动作")
         for action in result.get("suggested_actions", []):
@@ -364,13 +491,20 @@ def render_execution(execution: dict[str, Any], store: EnterpriseStore) -> None:
                 Path(report_path).read_bytes(),
                 file_name=Path(report_path).name,
                 mime="text/markdown",
+                on_click=log_quick_operation,
+                args=(
+                    store,
+                    "download_report",
+                    "下载分析报告",
+                    {"execution_id": execution["execution_id"]},
+                ),
             )
         st.caption(
             f"案件编号：{execution['case_id']} · 执行编号：{execution['execution_id']} · 模型路线：{result.get('model_route', 'deterministic')}"
         )
 
 
-def render_knowledge_matches(matches: list[dict[str, Any]]) -> None:
+def render_knowledge_matches(matches: list[dict[str, Any]], store: EnterpriseStore) -> None:
     """展示分析时实际召回的制度、章程和历史案例证据。"""
 
     if not matches:
@@ -409,6 +543,13 @@ def render_knowledge_matches(matches: list[dict[str, Any]]) -> None:
                     Path(stored_path).read_bytes(),
                     file_name=item.get("metadata", {}).get("file_name") or Path(stored_path).name,
                     key=f"knowledge_source_{item.get('chunk_id')}",
+                    on_click=log_quick_operation,
+                    args=(
+                        store,
+                        "download_knowledge_source",
+                        f"下载知识原件｜{item.get('title', '')}",
+                        {"document_id": item.get("document_id")},
+                    ),
                 )
 
 
@@ -492,8 +633,14 @@ def page_knowledge(workspace: ReviewWorkspace) -> None:
             with st.expander("查看正文"):
                 st.text(selected["content"])
             if st.button("删除所选资料", type="secondary"):
-                workspace.store.delete_knowledge_document(
-                    selected_id, st.session_state["actor"]
+                execute_logged_operation(
+                    workspace.store,
+                    "delete_knowledge",
+                    f"删除知识资料｜{selected['title']}",
+                    lambda: workspace.store.delete_knowledge_document(
+                        selected_id, st.session_state["actor"]
+                    ),
+                    {"document_id": selected_id},
                 )
                 st.success("资料已删除")
                 st.rerun()
@@ -524,32 +671,40 @@ def page_knowledge(workspace: ReviewWorkspace) -> None:
             )
         if add_submitted:
             try:
-                if upload:
-                    managed_title = title.strip() or upload.name
-                    workspace.knowledge.add_upload(
-                        upload.name,
-                        upload.getvalue(),
-                        department,
-                        document_type,
-                        st.session_state["actor"],
-                        title=managed_title,
-                        version=version,
-                        effective_date=effective_date,
-                        source_ref=f"managed:{department}:{document_type}:{managed_title}",
-                    )
-                elif content.strip():
-                    workspace.knowledge.add_text(
-                        title,
-                        content,
-                        department,
-                        document_type,
-                        st.session_state["actor"],
-                        version=version,
-                        effective_date=effective_date,
-                        source_ref=f"managed:{department}:{document_type}:{title.strip()}",
-                    )
-                else:
+                def save_knowledge() -> str:
+                    if upload:
+                        managed_title = title.strip() or upload.name
+                        return workspace.knowledge.add_upload(
+                            upload.name,
+                            upload.getvalue(),
+                            department,
+                            document_type,
+                            st.session_state["actor"],
+                            title=managed_title,
+                            version=version,
+                            effective_date=effective_date,
+                            source_ref=f"managed:{department}:{document_type}:{managed_title}",
+                        )
+                    if content.strip():
+                        return workspace.knowledge.add_text(
+                            title,
+                            content,
+                            department,
+                            document_type,
+                            st.session_state["actor"],
+                            version=version,
+                            effective_date=effective_date,
+                            source_ref=f"managed:{department}:{document_type}:{title.strip()}",
+                        )
                     raise ValueError("请上传文件或粘贴资料正文")
+
+                execute_logged_operation(
+                    workspace.store,
+                    "save_knowledge",
+                    f"保存知识资料｜{title.strip() or (upload.name if upload else '未命名')}",
+                    save_knowledge,
+                    {"department": department, "document_type": document_type},
+                )
                 st.success("资料已保存并可用于后续分析")
                 st.rerun()
             except (ValueError, OSError, ImportError) as exc:
@@ -562,23 +717,32 @@ def page_knowledge(workspace: ReviewWorkspace) -> None:
             search_types = st.multiselect("资料类型", DOCUMENT_TYPES, default=DOCUMENT_TYPES)
             search_submitted = st.form_submit_button("检索", type="primary")
         if search_submitted:
-            matches = workspace.knowledge.search(
-                query,
-                departments=search_departments or None,
-                document_types=search_types or None,
-                limit=10,
+            matches = execute_logged_operation(
+                workspace.store,
+                "search_knowledge",
+                "检索知识资料",
+                lambda: workspace.knowledge.search(
+                    query,
+                    departments=search_departments or None,
+                    document_types=search_types or None,
+                    limit=10,
+                ),
+                {"query": query[:200]},
             )
-            render_knowledge_matches(matches)
+            render_knowledge_matches(matches, workspace.store)
 
     with baseline_tab:
-        st.warning(
-            "该基线仅用于保利酒店类集团的功能规划与演示，不代表保利酒店现行制度；正式使用前必须替换为企业已审批的有效文件。"
-        )
+        st.warning("该基线仅用于酒店集团功能规划与演示；正式使用前必须替换为企业已审批的有效文件。")
         st.write(
             "基线覆盖公司治理授权、酒店采购与收入审计、劳动用工与关键岗位、印章档案与安全证照、费用支付与经营预算。"
         )
         if st.button("装载或更新规划基线", type="primary"):
-            result = workspace.knowledge.seed_hotel_baseline(st.session_state["actor"])
+            result = execute_logged_operation(
+                workspace.store,
+                "seed_knowledge_baseline",
+                "装载酒店集团规划基线",
+                lambda: workspace.knowledge.seed_hotel_baseline(st.session_state["actor"]),
+            )
             st.success(f"已装载 {result['created']} 份规划资料")
             st.rerun()
 
@@ -600,12 +764,25 @@ def page_tasks(store: EnterpriseStore) -> None:
             details = st.text_area("说明")
             if st.form_submit_button("创建任务"):
                 if title.strip():
-                    store.create_task(
-                        title.strip(), owner, due_date, priority, source="手工", details=details
+                    execute_logged_operation(
+                        store,
+                        "create_task",
+                        f"创建任务｜{title.strip()}",
+                        lambda: store.create_task(
+                            title.strip(),
+                            owner,
+                            due_date,
+                            priority,
+                            source="手工",
+                            details=details,
+                        ),
                     )
                     st.success("任务已创建")
                     st.rerun()
                 else:
+                    log_rejected_operation(
+                        store, "create_task", "创建任务", "任务标题为空"
+                    )
                     st.error("请输入任务标题")
     task_tab, approval_tab = st.tabs(["任务", "审批"])
     with approval_tab:
@@ -658,7 +835,13 @@ def render_tasks(store: EnterpriseStore) -> None:
         owner = columns[1].text_input("负责人", value=selected.get("owner") or "")
         due_date = columns[2].text_input("截止日期", value=selected.get("due_date") or "")
         if st.form_submit_button("保存任务更新"):
-            store.update_task(selected_id, status, owner, due_date)
+            execute_logged_operation(
+                store,
+                "update_task",
+                f"更新任务｜{selected['title']}",
+                lambda: store.update_task(selected_id, status, owner, due_date),
+                {"task_id": selected_id, "status": status},
+            )
             st.success("任务已更新")
             st.rerun()
 
@@ -699,7 +882,15 @@ def render_approvals(store: EnterpriseStore, case_id: str | None = None) -> None
         comment = st.text_area("审批意见")
         if st.form_submit_button("提交审批决定"):
             try:
-                store.decide_approval(approval_id, decision, comment, st.session_state["actor"])
+                execute_logged_operation(
+                    store,
+                    "decide_approval",
+                    "提交审批决定",
+                    lambda: store.decide_approval(
+                        approval_id, decision, comment, st.session_state["actor"]
+                    ),
+                    {"approval_id": approval_id, "decision": decision},
+                )
                 st.success("审批决定已保存")
                 st.rerun()
             except ValueError as exc:
@@ -755,7 +946,15 @@ def page_history(workspace: ReviewWorkspace) -> None:
         else ["待人工复核", "补充材料", "已确认", "已关闭", "执行失败"].index(case["status"]),
     )
     if columns[1].button("更新案件状态"):
-        workspace.update_case_status(case_id, new_status, st.session_state["actor"])
+        execute_logged_operation(
+            workspace.store,
+            "update_case_status",
+            f"更新案件状态｜{case['title']}",
+            lambda: workspace.update_case_status(
+                case_id, new_status, st.session_state["actor"]
+            ),
+            {"case_id": case_id, "status": new_status},
+        )
         st.success("案件状态已更新")
         st.rerun()
     with st.expander(f"原始附件 ({len(case['artifacts'])})"):
@@ -769,11 +968,26 @@ def page_history(workspace: ReviewWorkspace) -> None:
                     path.read_bytes(),
                     file_name=artifact["file_name"],
                     key=f"artifact_{artifact['id']}",
+                    on_click=log_quick_operation,
+                    args=(
+                        workspace.store,
+                        "download_case_artifact",
+                        f"下载案件附件｜{artifact['file_name']}",
+                        {"case_id": case_id, "artifact_id": artifact["id"]},
+                    ),
                 )
     if st.button("使用已保存附件重新执行"):
         with st.spinner("正在重新执行……"):
-            execution = workspace.rerun(
-                case_id, st.session_state["actor"], {"use_ai": False, "create_tasks": False}
+            execution = execute_logged_operation(
+                workspace.store,
+                "rerun_case",
+                f"重新执行案件｜{case['title']}",
+                lambda: workspace.rerun(
+                    case_id,
+                    st.session_state["actor"],
+                    {"use_ai": False, "create_tasks": False},
+                ),
+                {"case_id": case_id},
             )
         st.session_state["last_execution"] = execution.to_dict()
         st.success("重新执行完成" if execution.success else f"重新执行失败：{execution.error}")
@@ -791,7 +1005,15 @@ def page_history(workspace: ReviewWorkspace) -> None:
     action = approval_actions.get(case["workflow_id"], "案件关闭")
     st.write(f"当前流程需要人工审批的动作：**{action}**")
     if st.button("发起审批", key=f"request_approval_{case_id}"):
-        workspace.store.create_approval(case_id, action, st.session_state["actor"])
+        execute_logged_operation(
+            workspace.store,
+            "request_approval",
+            f"发起审批｜{action}",
+            lambda: workspace.store.create_approval(
+                case_id, action, st.session_state["actor"]
+            ),
+            {"case_id": case_id},
+        )
         st.success("审批申请已创建，请由另一位操作人处理")
         st.rerun()
     render_approvals(workspace.store, case_id)
@@ -849,49 +1071,297 @@ def page_history(workspace: ReviewWorkspace) -> None:
         )
         comment = st.text_area("复核意见", value=selected.get("review_comment") or "")
         if st.form_submit_button("保存复核结论"):
-            workspace.store.update_finding_review(
-                finding_id, review_status, comment, st.session_state["actor"]
+            execute_logged_operation(
+                workspace.store,
+                "review_finding",
+                f"保存发现复核｜{selected['title']}",
+                lambda: workspace.store.update_finding_review(
+                    finding_id, review_status, comment, st.session_state["actor"]
+                ),
+                {"finding_id": finding_id, "status": review_status},
             )
             st.success("复核结论已保存")
             st.rerun()
 
 
 def page_system(workspace: ReviewWorkspace) -> None:
-    """展示模型策略、数据目录和标准样本生成入口。"""
+    """配置安全等级、模型服务、密钥、数据目录和样本。"""
 
     st.markdown(
-        '<div class="hero"><h1>系统管理</h1><p>查看本地模型状态、数据保存位置和生成标准样本。</p></div>',
+        '<div class="hero"><h1>系统管理</h1><p>集中维护数据安全策略、模型连接和工作台运行参数。</p></div>',
         unsafe_allow_html=True,
     )
-    st.subheader("数据安全策略")
-    st.write("- L3：员工、简历、工资、劳动合同、发票、费用和未发布预算。默认仅本地处理。")
-    st.write("- L2：内部制度和会议纪要。默认本地处理，外发必须本次明确授权并先脱敏。")
-    st.write("- L1：公开岗位说明和通用写作材料。可按配置使用外部模型。")
-    if st.button("检查 Ollama 状态"):
-        status = workspace.model_gateway.status()
-        st.json(status)
-        if status["local_reachable"]:
-            st.success("Ollama 服务可访问")
-        else:
-            st.warning("Ollama 当前不可访问。确定性规则、解析和财务计算仍可使用。")
-    st.subheader("本地保存位置")
-    st.code(
-        f"数据库：{workspace.store.db_path}\n上传文件：{workspace.store.upload_dir}\n知识原件：{workspace.store.root / 'knowledge_sources'}\n报告：{workspace.store.report_dir}\n样本：{workspace.store.sample_dir}"
-    )
-    st.subheader("标准 MVP 样本")
-    st.write("生成劳动合同、岗位、简历、制度、会议、费用和预算样本，所有人物和金额均为虚构。")
-    if st.button("生成或更新标准样本", type="primary"):
-        result = generate_samples(workspace.store.sample_dir)
-        st.success("标准样本已生成")
-        st.json(result)
-    expected = workspace.store.sample_dir / "expected.json"
-    if expected.is_file():
-        st.download_button(
-            "下载样本预期结果",
-            expected.read_bytes(),
-            file_name="expected.json",
-            mime="application/json",
+    settings = workspace.model_gateway.settings()
+    security_tab, model_tab, data_tab = st.tabs(["安全等级", "模型服务", "数据与样本"])
+
+    with security_tab:
+        with st.form("security_settings"):
+            configured_levels: dict[str, dict[str, str]] = {}
+            for level in ("L1", "L2", "L3"):
+                current = settings["security_levels"][level]
+                st.markdown(f"#### {level}")
+                columns = st.columns([1.3, 3, 2])
+                name = columns[0].text_input(
+                    "等级名称", value=current["name"], key=f"security_name_{level}"
+                )
+                description = columns[1].text_area(
+                    "资料范围",
+                    value=current["description"],
+                    height=90,
+                    key=f"security_description_{level}",
+                )
+                policy_keys = list(SECURITY_POLICY_OPTIONS)
+                policy = columns[2].selectbox(
+                    "模型路由策略",
+                    policy_keys,
+                    index=policy_keys.index(current["policy"]),
+                    format_func=lambda value: SECURITY_POLICY_OPTIONS[value],
+                    key=f"security_policy_{level}",
+                )
+                configured_levels[level] = {
+                    "name": name.strip() or level,
+                    "description": description.strip(),
+                    "policy": policy,
+                }
+            st.markdown("#### 工作流等级映射")
+            configured_workflows: dict[str, str] = {}
+            workflow_columns = st.columns(2)
+            for index, item in enumerate(workspace.catalog()):
+                current_level = settings["workflow_sensitivity"].get(
+                    item["id"], item["sensitivity"]
+                )
+                configured_workflows[item["id"]] = workflow_columns[index % 2].selectbox(
+                    item["label"],
+                    ["L1", "L2", "L3"],
+                    index=["L1", "L2", "L3"].index(current_level),
+                    key=f"workflow_sensitivity_{item['id']}",
+                )
+            save_security = st.form_submit_button(
+                "保存安全等级配置", type="primary", **STRETCH_KWARGS
+            )
+        if save_security:
+            execute_logged_operation(
+                workspace.store,
+                "save_security_settings",
+                "保存数据安全等级",
+                lambda: workspace.store.save_system_settings(
+                    {
+                        "security_levels": configured_levels,
+                        "workflow_sensitivity": configured_workflows,
+                    },
+                    st.session_state["actor"],
+                    SECRET_SETTING_KEYS,
+                ),
+            )
+            st.success("安全等级配置已保存并即时生效")
+            st.rerun()
+
+    with model_tab:
+        with st.form("model_settings"):
+            st.caption("API Key 由操作系统凭据能力保护，企业数据库只保存引用，不会写入运行日志或分析报告。")
+            st.markdown("#### 本地模型")
+            local_enabled = st.checkbox("启用本地模型", value=bool(settings["local_enabled"]))
+            local_columns = st.columns(2)
+            local_base_url = local_columns[0].text_input(
+                "本地 Base URL", value=str(settings["local_base_url"])
+            )
+            local_model = local_columns[1].text_input(
+                "本地模型名", value=str(settings["local_model"])
+            )
+            local_key = st.text_input(
+                "本地 API Key",
+                type="password",
+                placeholder="留空则保持当前值",
+                help="Ollama 通常不校验密钥，可保留 ollama。",
+            )
+            local_key_clear = st.checkbox("清空已保存的本地 API Key")
+            st.caption(
+                "本地 API Key：" + ("已配置" if settings["local_api_key"] else "未配置")
+            )
+
+            st.divider()
+            st.markdown("#### 外部模型")
+            external_enabled = st.checkbox(
+                "启用外部模型", value=bool(settings["external_enabled"])
+            )
+            external_columns = st.columns(2)
+            external_provider = external_columns[0].text_input(
+                "服务商标识", value=str(settings["external_provider"])
+            )
+            external_model = external_columns[1].text_input(
+                "外部模型名", value=str(settings["external_model"])
+            )
+            external_base_url = st.text_input(
+                "外部 Base URL", value=str(settings["external_base_url"])
+            )
+            external_key = st.text_input(
+                "外部 API Key", type="password", placeholder="留空则保持当前值"
+            )
+            external_key_clear = st.checkbox("清空已保存的外部 API Key")
+            st.caption(
+                "外部 API Key："
+                + ("已配置" if settings["external_api_key"] else "未配置")
+            )
+            numeric_columns = st.columns(2)
+            model_timeout = numeric_columns[0].number_input(
+                "模型超时（秒）",
+                min_value=1.0,
+                max_value=600.0,
+                value=float(settings["model_timeout"]),
+                step=1.0,
+            )
+            knowledge_default_limit = numeric_columns[1].number_input(
+                "默认知识召回条数",
+                min_value=1,
+                max_value=20,
+                value=int(settings["knowledge_default_limit"]),
+                step=1,
+            )
+            save_models = st.form_submit_button(
+                "保存模型配置", type="primary", **STRETCH_KWARGS
+            )
+        if save_models:
+            updated = {
+                "local_enabled": local_enabled,
+                "local_base_url": local_base_url.strip(),
+                "local_model": local_model.strip(),
+                "local_api_key": ""
+                if local_key_clear
+                else local_key.strip() or settings["local_api_key"],
+                "external_enabled": external_enabled,
+                "external_provider": external_provider.strip(),
+                "external_base_url": external_base_url.strip(),
+                "external_model": external_model.strip(),
+                "external_api_key": ""
+                if external_key_clear
+                else external_key.strip() or settings["external_api_key"],
+                "model_timeout": float(model_timeout),
+                "knowledge_default_limit": int(knowledge_default_limit),
+            }
+            execute_logged_operation(
+                workspace.store,
+                "save_model_settings",
+                "保存模型服务配置",
+                lambda: workspace.store.save_system_settings(
+                    updated, st.session_state["actor"], SECRET_SETTING_KEYS
+                ),
+            )
+            st.success("模型配置已保存并即时生效")
+            st.rerun()
+        if st.button("检查本地模型连接"):
+            status = execute_logged_operation(
+                workspace.store,
+                "check_model_status",
+                "检查本地模型连接",
+                workspace.model_gateway.status,
+            )
+            st.json(status)
+            if status["local_reachable"]:
+                st.success("本地模型服务可访问")
+            else:
+                st.warning(status["local_error"] or "本地模型当前不可访问")
+
+    with data_tab:
+        st.subheader("本地保存位置")
+        st.code(
+            f"数据库：{workspace.store.db_path}\n上传文件：{workspace.store.upload_dir}\n知识原件：{workspace.store.root / 'knowledge_sources'}\n报告：{workspace.store.report_dir}\n样本：{workspace.store.sample_dir}"
         )
+        st.subheader("标准样本")
+        st.write("生成劳动合同、岗位、简历、制度、会议、费用和预算样本，所有人物和金额均为虚构。")
+        if st.button("生成或更新标准样本", type="primary"):
+            result = execute_logged_operation(
+                workspace.store,
+                "generate_samples",
+                "生成标准业务样本",
+                lambda: generate_samples(workspace.store.sample_dir),
+            )
+            st.success("标准样本已生成")
+            st.json(result)
+        expected = workspace.store.sample_dir / "expected.json"
+        if expected.is_file():
+            st.download_button(
+                "下载样本预期结果",
+                expected.read_bytes(),
+                file_name="expected.json",
+                mime="application/json",
+                on_click=log_quick_operation,
+                args=(
+                    workspace.store,
+                    "download_sample_expectations",
+                    "下载样本预期结果",
+                ),
+            )
+
+
+def page_monitor(store: EnterpriseStore) -> None:
+    """展示运行中任务、按钮操作日志和模型调用情况。"""
+
+    st.markdown(
+        '<div class="hero"><h1>运行监控</h1><p>查看当前处理任务、页面操作结果和模型调用路线。</p></div>',
+        unsafe_allow_html=True,
+    )
+    store.reconcile_stale_runtime_events()
+    running = store.list_runtime_events(status="运行中")
+    operations = store.list_runtime_events(category="operation", limit=300)
+    model_calls = store.list_runtime_events(category="model", limit=300)
+    metrics = st.columns(4)
+    metrics[0].metric("运行中", len(running))
+    metrics[1].metric("操作事件", len(operations))
+    metrics[2].metric("模型调用", len(model_calls))
+    metrics[3].metric("模型失败", sum(item["status"] == "失败" for item in model_calls))
+    refresh_columns = st.columns([1, 1, 4])
+    auto_refresh = refresh_columns[0].toggle("自动刷新", value=False)
+    refresh_seconds = refresh_columns[1].selectbox("刷新间隔", [2, 5, 10], index=1)
+    if refresh_columns[2].button("立即刷新"):
+        log_quick_operation(store, "refresh_monitor", "刷新运行监控")
+        st.rerun()
+
+    current_tab, operation_tab, model_tab = st.tabs(["当前任务", "操作日志", "模型调用"])
+    with current_tab:
+        if running:
+            render_runtime_events(running)
+        else:
+            st.info("当前没有正在处理的任务。")
+    with operation_tab:
+        render_runtime_events(operations)
+    with model_tab:
+        render_runtime_events(model_calls, model_view=True)
+    if auto_refresh:
+        time.sleep(refresh_seconds)
+        st.rerun()
+
+
+def render_runtime_events(events: list[dict[str, Any]], model_view: bool = False) -> None:
+    """把运行事件转换为便于监控的表格。"""
+
+    if not events:
+        st.info("暂无记录。")
+        return
+    rows = []
+    for item in events:
+        details = item.get("details", {})
+        row = {
+            "状态": item["status"],
+            "事件": item["title"],
+            "操作人": item["actor"],
+            "开始时间": item["started_at"],
+            "结束时间": item["completed_at"] or "处理中",
+        }
+        if model_view:
+            row.update(
+                {
+                    "服务商": details.get("provider", ""),
+                    "模型": details.get("model", ""),
+                    "路线": details.get("route", ""),
+                    "敏感等级": details.get("sensitivity", ""),
+                    "耗时(ms)": details.get("duration_ms", ""),
+                    "错误": details.get("error", ""),
+                }
+            )
+        else:
+            row["详情"] = json.dumps(details, ensure_ascii=False, default=str)
+        rows.append(row)
+    st.dataframe(rows, hide_index=True, **STRETCH_KWARGS)
 
 
 def workflow_label(workspace: ReviewWorkspace, workflow_id: str) -> str:

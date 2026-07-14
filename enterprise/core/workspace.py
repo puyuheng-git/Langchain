@@ -32,7 +32,10 @@ class ReviewWorkspace:
 
         self.store = store or EnterpriseStore()
         self.knowledge = KnowledgeBase(self.store)
-        self.model_gateway = model_gateway or ModelGateway()
+        self.model_gateway = model_gateway or ModelGateway(
+            settings_provider=self.store.get_system_settings,
+            event_store=self.store,
+        )
         workflows: list[Workflow] = [
             CommercialContractWorkflow(),
             LaborContractWorkflow(),
@@ -47,11 +50,12 @@ class ReviewWorkspace:
     def catalog(self) -> list[dict[str, str]]:
         """返回 UI 可直接使用的工作流目录。"""
 
+        configured = self.model_gateway.settings()["workflow_sensitivity"]
         return [
             {
                 "id": workflow.workflow_id,
                 "label": workflow.label,
-                "sensitivity": workflow.sensitivity,
+                "sensitivity": configured.get(workflow.workflow_id, workflow.sensitivity),
             }
             for workflow in self.workflows.values()
         ]
@@ -68,12 +72,14 @@ class ReviewWorkspace:
 
         options = dict(options or {})
         workflow = self._workflow(workflow_id)
+        sensitivity = self._workflow_sensitivity(workflow)
+        options["_sensitivity"] = sensitivity
         case_title = title.strip() or f"{workflow.label} - {uploads[0][0] if uploads else '新任务'}"
         case_id = self.store.create_case(
             workflow_id,
             case_title,
             actor,
-            workflow.sensitivity,
+            sensitivity,
             {"files": [item[0] for item in uploads], "options": _safe_options(options)},
         )
         try:
@@ -97,13 +103,15 @@ class ReviewWorkspace:
 
         options = dict(options or {})
         workflow = self._workflow(workflow_id)
+        sensitivity = self._workflow_sensitivity(workflow)
+        options["_sensitivity"] = sensitivity
         names = [Path(path).name for path in file_paths]
         case_title = title.strip() or f"{workflow.label} - {names[0] if names else '新任务'}"
         case_id = self.store.create_case(
             workflow_id,
             case_title,
             actor,
-            workflow.sensitivity,
+            sensitivity,
             {"files": names, "options": _safe_options(options)},
         )
         try:
@@ -122,7 +130,9 @@ class ReviewWorkspace:
             raise ValueError(f"案件不存在: {case_id}")
         paths = [Path(item["stored_path"]) for item in case["artifacts"]]
         workflow = self._workflow(case["workflow_id"])
-        return self._execute_archived(case_id, workflow, paths, actor, dict(options or {}))
+        rerun_options = dict(options or {})
+        rerun_options["_sensitivity"] = self._workflow_sensitivity(workflow)
+        return self._execute_archived(case_id, workflow, paths, actor, rerun_options)
 
     def _execute_archived(
         self,
@@ -142,13 +152,14 @@ class ReviewWorkspace:
             result = workflow.execute(documents, options, self.model_gateway)
             if options.get("knowledge_enabled", True):
                 department = WORKFLOW_DEPARTMENTS[workflow.workflow_id]
+                default_limit = int(self.model_gateway.settings()["knowledge_default_limit"])
                 result.knowledge_matches = compare_analysis_matches(
                     result,
                     self.knowledge.search(
                         build_analysis_query(result, documents),
                         departments=[department, "公司级"],
                         document_types=options.get("knowledge_types") or None,
-                        limit=int(options.get("knowledge_limit", 6)),
+                        limit=int(options.get("knowledge_limit", default_limit)),
                         exclude_source_ref=case_id,
                     ),
                     documents,
@@ -242,6 +253,14 @@ class ReviewWorkspace:
         except KeyError as exc:
             supported = "、".join(self.workflows)
             raise ValueError(f"未知工作流 {workflow_id}，可选：{supported}") from exc
+
+    def _workflow_sensitivity(self, workflow: Workflow) -> str:
+        """读取页面配置的工作流安全等级，异常值回退到代码默认值。"""
+
+        configured = self.model_gateway.settings()["workflow_sensitivity"].get(
+            workflow.workflow_id, workflow.sensitivity
+        )
+        return configured if configured in {"L1", "L2", "L3"} else workflow.sensitivity
 
 
 def _safe_options(options: dict[str, Any]) -> dict[str, Any]:

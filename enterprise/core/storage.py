@@ -9,10 +9,12 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from .models import Finding, new_id, utc_now
+from .secrets import SecretStore
 
 
 def _json(value: Any) -> str:
@@ -50,10 +52,12 @@ class EnterpriseStore:
         self.upload_dir = self.root / "uploads"
         self.report_dir = self.root / "reports"
         self.sample_dir = self.root / "samples"
+        self.secret_store = SecretStore(self.root / "secrets")
         self.db_path = self.root / "enterprise.db"
         for directory in (self.root, self.upload_dir, self.report_dir, self.sample_dir):
             directory.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self.reconcile_stale_runtime_events()
 
     def _connect(self) -> sqlite3.Connection:
         """创建启用外键和字典行访问的短连接。"""
@@ -173,6 +177,24 @@ class EnterpriseStore:
             content TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            is_secret INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS runtime_events (
+            id TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            entity_id TEXT,
+            status TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT
+        );
         CREATE INDEX IF NOT EXISTS idx_cases_updated ON cases(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_executions_case ON executions(case_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_findings_case ON findings(case_id, severity);
@@ -184,6 +206,8 @@ class EnterpriseStore:
             ON knowledge_documents(source_ref)
             WHERE source_ref IS NOT NULL AND source_ref <> '';
         CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document ON knowledge_chunks(document_id, position);
+        CREATE INDEX IF NOT EXISTS idx_runtime_events_status ON runtime_events(status, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_runtime_events_category ON runtime_events(category, started_at DESC);
         """
         with self._connect() as connection:
             connection.executescript(schema)
@@ -387,7 +411,8 @@ class EnterpriseStore:
                 "SELECT * FROM artifacts WHERE case_id=? ORDER BY created_at", (case_id,)
             ).fetchall()
             executions = connection.execute(
-                "SELECT * FROM executions WHERE case_id=? ORDER BY started_at DESC", (case_id,)
+                "SELECT * FROM executions WHERE case_id=? ORDER BY started_at DESC, rowid DESC",
+                (case_id,),
             ).fetchall()
             findings = connection.execute(
                 "SELECT * FROM findings WHERE case_id=? ORDER BY created_at", (case_id,)
@@ -713,6 +738,157 @@ class EnterpriseStore:
         with self._connect() as connection:
             connection.execute("DELETE FROM knowledge_documents WHERE id=?", (document_id,))
         self.log(actor, "delete", "knowledge_document", document_id)
+
+    def get_system_settings(self) -> dict[str, Any]:
+        """读取页面保存的运行配置覆盖值。"""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT key, value_json, is_secret FROM system_settings"
+            ).fetchall()
+        output = {}
+        for row in rows:
+            output[row["key"]] = (
+                self.secret_store.get(row["key"])
+                if row["is_secret"]
+                else _loads(row["value_json"], None)
+            )
+        return output
+
+    def save_system_settings(
+        self,
+        settings: dict[str, Any],
+        actor: str,
+        secret_keys: set[str] | None = None,
+    ) -> None:
+        """保存运行配置；审计日志只记录键名，不记录配置值。"""
+
+        secret_keys = secret_keys or {"local_api_key", "external_api_key"}
+        now = utc_now()
+        for key in secret_keys & settings.keys():
+            self.secret_store.set(key, str(settings[key] or ""))
+        with self._connect() as connection:
+            connection.executemany(
+                """INSERT INTO system_settings(key, value_json, is_secret, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json=excluded.value_json,
+                    is_secret=excluded.is_secret,
+                    updated_at=excluded.updated_at""",
+                [
+                    (
+                        key,
+                        _json({"secret_ref": key}) if key in secret_keys else _json(value),
+                        int(key in secret_keys),
+                        now,
+                    )
+                    for key, value in settings.items()
+                ],
+            )
+        self.log(
+            actor,
+            "update",
+            "system_settings",
+            "runtime",
+            {"updated_keys": sorted(settings), "secret_keys": sorted(secret_keys & settings.keys())},
+        )
+
+    def start_runtime_event(
+        self,
+        category: str,
+        event_type: str,
+        title: str,
+        actor: str,
+        details: dict[str, Any] | None = None,
+        entity_id: str = "",
+    ) -> str:
+        """登记一个按钮操作、模型调用或后台任务的运行状态。"""
+
+        event_id = new_id("event")
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO runtime_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_id,
+                    category,
+                    event_type,
+                    title,
+                    actor,
+                    entity_id,
+                    "运行中",
+                    _json(details or {}),
+                    utc_now(),
+                    None,
+                ),
+            )
+        return event_id
+
+    def complete_runtime_event(
+        self,
+        event_id: str,
+        status: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """结束运行事件并合并结果详情。"""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT details_json FROM runtime_events WHERE id=?", (event_id,)
+            ).fetchone()
+            if not row:
+                return
+            merged = _loads(row["details_json"], {})
+            merged.update(details or {})
+            connection.execute(
+                "UPDATE runtime_events SET status=?, details_json=?, completed_at=? WHERE id=?",
+                (status, _json(merged), utc_now(), event_id),
+            )
+
+    def list_runtime_events(
+        self,
+        category: str | None = None,
+        status: str | None = None,
+        limit: int = 300,
+    ) -> list[dict[str, Any]]:
+        """按类型或状态读取运行监控事件。"""
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if category:
+            clauses.append("category=?")
+            params.append(category)
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        query = "SELECT * FROM runtime_events"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY started_at DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["details"] = _loads(item.pop("details_json", None), {})
+            output.append(item)
+        return output
+
+    def reconcile_stale_runtime_events(self, max_age_minutes: int = 120) -> int:
+        """把进程中断后长期未完成的运行事件标记为已中断。"""
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)).isoformat(
+            timespec="seconds"
+        )
+        now = utc_now()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE runtime_events
+                SET status='已中断', completed_at=?
+                WHERE status='运行中' AND started_at<?""",
+                (now, cutoff),
+            )
+        return cursor.rowcount
 
     @staticmethod
     def _decode_case(row: dict[str, Any]) -> dict[str, Any]:

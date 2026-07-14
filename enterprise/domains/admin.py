@@ -301,7 +301,7 @@ def _ai_summary(
         task=result.workflow_id,
         system_prompt='你是行政管理助手。只返回 JSON：{"management_summary":"..."}。不得替代制度批准或会议决策。',
         user_content=f"材料：\n{content}\n\n确定性结果：{result.summary}",
-        sensitivity="L2",
+        sensitivity=str(options.get("_sensitivity", "L2")),
         allow_external=bool(options.get("allow_external", False)),
     )
     if response.success and response.data and response.data.get("management_summary"):

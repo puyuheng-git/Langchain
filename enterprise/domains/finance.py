@@ -415,7 +415,7 @@ def _finance_ai_summary(
         task=result.workflow_id,
         system_prompt='你是财务管理助手。只返回 JSON：{"management_summary":"..."}。不得重算金额，不得批准费用、付款或预算调整。',
         user_content=f"材料节选：\n{content}\n\n本地确定性计算结果：{result.summary}",
-        sensitivity="L3",
+        sensitivity=str(options.get("_sensitivity", "L3")),
         allow_external=bool(options.get("allow_external", False)),
     )
     if response.success and response.data and response.data.get("management_summary"):

@@ -40,7 +40,7 @@ def test_analysis_compares_rag_evidence_and_persists_case_memory(tmp_path: Path)
     store = EnterpriseStore(tmp_path / "enterprise")
     workspace = ReviewWorkspace(store)
     workspace.knowledge.add_text(
-        title="保利酒店费用管理制度（规划样本）",
+        title="酒店集团费用管理制度（规划样本）",
         content="招待费单笔超过5000元须由酒店总经理审批，申请人和审批人不得为同一人。",
         department="财务管理",
         document_type="部门制度",
@@ -63,7 +63,7 @@ def test_analysis_compares_rag_evidence_and_persists_case_memory(tmp_path: Path)
     assert first.result is not None
     assert first.result.knowledge_matches
     match = first.result.knowledge_matches[0]
-    assert match["title"] == "保利酒店费用管理制度（规划样本）"
+    assert match["title"] == "酒店集团费用管理制度（规划样本）"
     assert "5000" in match["excerpt"]
     assert match["authority_label"].startswith("二级")
     assert match["related_findings"]

@@ -237,7 +237,7 @@ class KnowledgeBase:
         )
 
     def seed_hotel_baseline(self, actor: str = "本地用户") -> dict[str, int]:
-        """写入保利酒店场景的规划样本，不冒充企业现行正式制度。"""
+        """写入酒店集团场景的规划样本，不冒充企业现行正式制度。"""
 
         created = 0
         for index, item in enumerate(_HOTEL_BASELINE, start=1):
@@ -417,7 +417,7 @@ def _comparison_text(match: dict[str, Any]) -> str:
     return "当前材料与该制度条款语义相关，请核对适用范围、版本效力及实际执行是否一致。"
 
 
-_DISCLAIMER = "以下内容仅为保利酒店类集团的工作台规划样本，不代表保利酒店现行制度，投产前须由企业负责人替换并确认。"
+_DISCLAIMER = "以下内容仅为酒店集团工作台规划样本，不代表任何企业现行制度，投产前须由企业负责人替换并确认。"
 _HOTEL_BASELINE = [
     {
         "title": "酒店集团公司章程与授权边界（规划样本）",

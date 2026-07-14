@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
+
+from enterprise.core.settings import merge_system_settings
 
 
 @dataclass(slots=True)
@@ -52,35 +54,53 @@ def redact_text(text: str) -> tuple[str, dict[str, int]]:
 class ModelGateway:
     """封装 Ollama 本地模型和显式授权后的外部模型。"""
 
-    def __init__(self) -> None:
-        """从环境变量读取模型路由配置。"""
+    def __init__(
+        self,
+        settings_provider: Callable[[], dict[str, Any]] | None = None,
+        event_store: Any = None,
+    ) -> None:
+        """绑定动态配置提供器和可选运行事件仓储。"""
 
-        self.local_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-        self.local_model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
-        self.external_provider = os.getenv("ENTERPRISE_EXTERNAL_PROVIDER", "deepseek")
-        self.timeout = float(os.getenv("ENTERPRISE_MODEL_TIMEOUT", "20"))
+        self.settings_provider = settings_provider or (lambda: {})
+        self.event_store = event_store
+
+    def settings(self) -> dict[str, Any]:
+        """返回环境默认值与页面保存值合并后的实时配置。"""
+
+        return merge_system_settings(self.settings_provider())
 
     def status(self) -> dict[str, Any]:
         """返回不包含密钥的模型配置和本地服务可达状态。"""
 
+        config = self.settings()
         reachable = False
         error = ""
-        try:
-            import requests
+        if not config["local_enabled"]:
+            error = "本地模型已停用"
+        else:
+            try:
+                import requests
 
-            root_url = self.local_base_url.removesuffix("/v1")
-            response = requests.get(f"{root_url}/api/tags", timeout=2)
-            reachable = response.ok
-            if not response.ok:
-                error = f"HTTP {response.status_code}"
-        except Exception as exc:  # 网络状态只用于诊断，不影响确定性功能。
-            error = str(exc)
+                root_url = str(config["local_base_url"]).removesuffix("/v1")
+                response = requests.get(f"{root_url}/api/tags", timeout=2)
+                reachable = response.ok
+                if not response.ok:
+                    error = f"HTTP {response.status_code}"
+            except Exception as exc:  # 网络状态只用于诊断，不影响确定性功能。
+                error = str(exc)
         return {
-            "local_base_url": self.local_base_url,
-            "local_model": self.local_model,
+            "local_enabled": bool(config["local_enabled"]),
+            "local_base_url": config["local_base_url"],
+            "local_model": config["local_model"],
+            "local_key_configured": bool(config["local_api_key"]),
             "local_reachable": reachable,
             "local_error": error,
-            "external_provider": self.external_provider,
+            "external_enabled": bool(config["external_enabled"]),
+            "external_provider": config["external_provider"],
+            "external_base_url": config["external_base_url"],
+            "external_model": config["external_model"],
+            "external_key_configured": bool(config["external_api_key"]),
+            "model_timeout": config["model_timeout"],
         }
 
     def run_json(
@@ -91,16 +111,32 @@ class ModelGateway:
         sensitivity: str,
         allow_external: bool = False,
     ) -> ModelResponse:
-        """先调用本地模型，失败后仅按明确授权规则决定是否调用外部模型。"""
+        """按实时安全策略调用本地模型，并决定是否允许外部回退。"""
 
-        local = self._call_openai_compatible(
-            base_url=self.local_base_url,
-            api_key="ollama",
-            model=self.local_model,
-            system_prompt=system_prompt,
-            user_content=user_content,
-            route="local",
-        )
+        config = self.settings()
+        if config["local_enabled"]:
+            local = self._call_openai_compatible(
+                task=task,
+                base_url=str(config["local_base_url"]),
+                api_key=str(config["local_api_key"] or "ollama"),
+                model=str(config["local_model"]),
+                system_prompt=system_prompt,
+                user_content=user_content,
+                route="local",
+                provider="local",
+                timeout=float(config["model_timeout"]),
+                sensitivity=sensitivity,
+            )
+        else:
+            self._record_model_decision(
+                task,
+                "local",
+                "skipped",
+                str(config["local_model"]),
+                sensitivity,
+                "本地模型已停用",
+            )
+            local = ModelResponse(False, "deterministic", error="本地模型已停用")
         if local.success:
             return local
         if not allow_external:
@@ -109,55 +145,133 @@ class ModelGateway:
                 route="deterministic",
                 error=f"本地模型不可用，已按策略停止模型调用：{local.error}",
             )
-        if sensitivity not in {"L1", "L2", "L3"}:
+        level = config["security_levels"].get(sensitivity)
+        if not level:
+            self._record_model_decision(
+                task, "gateway", "blocked", "", sensitivity, "未知敏感等级，禁止外发"
+            )
             return ModelResponse(False, "deterministic", error="未知敏感等级，禁止外发")
-        redacted_content, counts = redact_text(user_content)
-        external = self._external_call(system_prompt, redacted_content)
+        policy = level.get("policy", "local_only")
+        if policy == "local_only":
+            self._record_model_decision(
+                task,
+                str(config["external_provider"]),
+                "blocked",
+                str(config["external_model"]),
+                sensitivity,
+                f"{sensitivity} 当前配置为仅本地处理",
+            )
+            return ModelResponse(False, "deterministic", error=f"{sensitivity} 当前配置为仅本地处理")
+        if policy not in {"redacted_external", "external_allowed"}:
+            self._record_model_decision(
+                task,
+                "gateway",
+                "blocked",
+                "",
+                sensitivity,
+                f"未知模型路由策略: {policy}",
+            )
+            return ModelResponse(False, "deterministic", error="未知模型路由策略，禁止外发")
+        if not config["external_enabled"]:
+            self._record_model_decision(
+                task,
+                str(config["external_provider"]),
+                "skipped",
+                str(config["external_model"]),
+                sensitivity,
+                "外部模型已停用",
+            )
+            return ModelResponse(False, "deterministic", error="外部模型已停用")
+        external_content, counts = redact_text(user_content)
+        route = "external-redacted"
+        external = self._external_call(
+            config,
+            task,
+            system_prompt,
+            external_content,
+            route,
+            sensitivity,
+        )
         external.redacted = True
-        if external.success:
+        if external.success and counts:
             external.text = f"脱敏统计: {counts}\n{external.text}".strip()
         return external
 
-    def _external_call(self, system_prompt: str, user_content: str) -> ModelResponse:
-        """调用显式配置的 OpenAI 兼容外部服务。"""
+    def _external_call(
+        self,
+        config: dict[str, Any],
+        task: str,
+        system_prompt: str,
+        user_content: str,
+        route: str,
+        sensitivity: str,
+    ) -> ModelResponse:
+        """使用页面配置调用 OpenAI 兼容外部服务。"""
 
-        provider = self.external_provider.lower()
-        if provider == "openai":
-            api_key = os.getenv("OPENAI_API_KEY", "")
-            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-            model = os.getenv(
-                "ENTERPRISE_EXTERNAL_MODEL", os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
-            )
-        else:
-            api_key = os.getenv("DEEPSEEK_API_KEY", "")
-            base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-            model = os.getenv("ENTERPRISE_EXTERNAL_MODEL", "deepseek-chat")
+        api_key = str(config["external_api_key"] or "")
         if not api_key or api_key.startswith("your_"):
+            self._record_model_decision(
+                task,
+                str(config["external_provider"]),
+                route,
+                str(config["external_model"]),
+                sensitivity,
+                "外部模型密钥未配置",
+            )
             return ModelResponse(False, "deterministic", error="外部模型密钥未配置")
         return self._call_openai_compatible(
-            base_url=base_url,
+            task=task,
+            base_url=str(config["external_base_url"]),
             api_key=api_key,
-            model=model,
+            model=str(config["external_model"]),
             system_prompt=system_prompt,
             user_content=user_content,
-            route="external-redacted",
+            route=route,
+            provider=str(config["external_provider"]),
+            timeout=float(config["model_timeout"]),
+            sensitivity=sensitivity,
         )
 
     def _call_openai_compatible(
         self,
+        task: str,
         base_url: str,
         api_key: str,
         model: str,
         system_prompt: str,
         user_content: str,
         route: str,
+        provider: str,
+        timeout: float,
+        sensitivity: str = "",
     ) -> ModelResponse:
-        """执行一次 OpenAI 兼容的非流式 JSON 调用。"""
+        """执行一次 OpenAI 兼容调用，并记录模型、路线、耗时和结果。"""
 
+        event_id = ""
+        started = time.monotonic()
+        if self.event_store:
+            try:
+                event_id = self.event_store.start_runtime_event(
+                    category="model",
+                    event_type=task,
+                    title=f"模型调用｜{task}",
+                    actor="system",
+                    details={
+                        "task": task,
+                        "provider": provider,
+                        "route": route,
+                        "base_url": base_url,
+                        "model": model,
+                        "sensitivity": sensitivity,
+                        "redacted": route == "external-redacted",
+                    },
+                )
+            except Exception:
+                event_id = ""
         try:
             from openai import OpenAI
 
-            client = OpenAI(api_key=api_key, base_url=base_url, timeout=self.timeout, max_retries=0)
+            client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
             response = client.chat.completions.create(
                 model=model,
                 temperature=0,
@@ -168,9 +282,63 @@ class ModelGateway:
             )
             text = response.choices[0].message.content or ""
             data = _extract_json(text)
-            return ModelResponse(True, route, data=data, text=text)
+            result = ModelResponse(True, route, data=data, text=text)
+            if event_id:
+                try:
+                    self.event_store.complete_runtime_event(
+                        event_id,
+                        "成功",
+                        {"duration_ms": round((time.monotonic() - started) * 1000)},
+                    )
+                except Exception:
+                    pass
+            return result
         except Exception as exc:
+            if event_id:
+                try:
+                    self.event_store.complete_runtime_event(
+                        event_id,
+                        "失败",
+                        {
+                            "duration_ms": round((time.monotonic() - started) * 1000),
+                            "error": str(exc),
+                        },
+                    )
+                except Exception:
+                    pass
             return ModelResponse(False, route, error=str(exc))
+
+    def _record_model_decision(
+        self,
+        task: str,
+        provider: str,
+        route: str,
+        model: str,
+        sensitivity: str,
+        reason: str,
+    ) -> None:
+        """记录因配置而跳过或阻止的模型调用尝试。"""
+
+        if not self.event_store:
+            return
+        try:
+            event_id = self.event_store.start_runtime_event(
+                category="model",
+                event_type=task,
+                title=f"模型调用｜{task}",
+                actor="system",
+                details={
+                    "task": task,
+                    "provider": provider,
+                    "route": route,
+                    "model": model,
+                    "sensitivity": sensitivity,
+                    "reason": reason,
+                },
+            )
+            self.event_store.complete_runtime_event(event_id, "跳过", {"error": reason})
+        except Exception:
+            pass
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
