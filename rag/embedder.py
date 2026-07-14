@@ -28,13 +28,14 @@ from pathlib import Path
 # sys.path 是 Python 查找模块时会搜索的路径列表
 sys.path.append(str(Path(__file__).parent.parent))
 
-from typing import List, Union
-from config import Config
+from typing import List
 
 # 导入 LangChain 的 Embedding 封装
 # LangChain 提供了统一的接口，底层可以是不同的模型
 # 注意：LangChain 0.2+ 版本中，OpenAIEmbeddings 已移动到 langchain-openai
 from langchain_openai import OpenAIEmbeddings
+
+from config import Config
 
 
 class Embedder:
@@ -165,12 +166,12 @@ class Embedder:
                     # 编码配置
                     encode_kwargs={"normalize_embeddings": True},  # 归一化向量
                 )
-            except ImportError:
+            except ImportError as exc:
                 # 如果没有安装 sentence-transformers，抛出错误
                 raise ImportError(
                     "使用 bge-m3 需要安装 sentence-transformers:\n"
                     "pip install sentence-transformers"
-                )
+                ) from exc
 
         else:
             # 不支持的模型名称
@@ -235,10 +236,16 @@ class Embedder:
             dim = embedder.get_dimension()
             print(f"向量维度: {dim}")  # 输出: 向量维度: 1536
         """
-        # 通过嵌入一个测试文本来获取维度
-        # 这比查配置更可靠，因为实际维度可能因配置而异
-        test_vector = self.embed_query("test")
-        return len(test_vector)
+        # 维度来自已选模型配置，初始化阶段不应为探测维度发起真实 API 请求。
+        if self.model_name == "openai":
+            # OpenAI 官方 text-embedding-3-small 为 1536 维；硅基流动的
+            # BAAI/bge-m3 为 1024 维。
+            if "siliconflow" in Config.OPENAI_BASE_URL.lower():
+                return 1024
+            return 1536
+        if self.model_name == "bge-m3":
+            return 1024
+        raise ValueError(f"未知 Embedding 模型维度: {self.model_name}")
 
 
 # ============================================

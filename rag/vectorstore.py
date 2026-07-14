@@ -27,14 +27,14 @@ Chroma 特点：
 2. 相似度搜索：根据查询向量找出最相似的文档
 """
 
+import hashlib
 import sys
 from pathlib import Path
 
 # 将父目录添加到 Python 路径
 sys.path.append(str(Path(__file__).parent.parent))
 
-from typing import List, Dict, Any, Optional, Tuple
-from config import Config
+from typing import Any, Dict, List, Optional, Tuple
 
 # 导入 ChromaDB
 # Chroma 是一个开源的嵌入式向量数据库
@@ -44,6 +44,8 @@ from chromadb.config import Settings
 # 导入 LangChain 的 Document 类型
 # Document 是 LangChain 中用于表示文档的标准数据结构
 from langchain_core.documents import Document
+
+from config import Config
 
 
 class VectorStore:
@@ -111,7 +113,7 @@ class VectorStore:
         # 如果集合已存在则获取，不存在则创建
         self.collection = self._get_or_create_collection()
 
-        print(f"✓ VectorStore 初始化完成")
+        print("✓ VectorStore 初始化完成")
         print(f"  集合名称: {collection_name}")
         print(f"  向量维度: {embedding_dimension}")
         print(f"  存储路径: {self.persist_directory}")
@@ -181,14 +183,21 @@ class VectorStore:
         # 准备 Chroma 需要的数据格式
         # Chroma 需要三个列表：ids, embeddings, documents, metadatas
 
-        # ids: 每个文档的唯一标识符
-        # 使用 "doc_序号_文件名" 的格式，确保唯一性
+        # 同一来源重新入库前先移除旧分块，避免文档修改后旧内容继续被检索。
+        sources = {
+            str(doc.metadata.get("source", "unknown"))
+            for doc in documents
+        }
+        for source in sources:
+            self.collection.delete(where={"source": source})
+
+        # ID 由来源、分块序号和内容共同计算，重复执行可稳定覆盖相同内容。
         ids = []
         for i, doc in enumerate(documents):
             # 从 metadata 中获取文件名，如果没有则使用 "unknown"
             source = doc.metadata.get("source", "unknown")
-            # 生成唯一 ID
-            doc_id = f"doc_{i}_{source}"
+            digest_input = f"{source}\0{i}\0{doc.page_content}".encode("utf-8")
+            doc_id = f"doc_{hashlib.sha256(digest_input).hexdigest()}"
             ids.append(doc_id)
 
         # documents: 文本内容列表
@@ -199,9 +208,8 @@ class VectorStore:
         # 从 Document 对象中提取 metadata
         metadatas = [doc.metadata for doc in documents]
 
-        # 调用 Chroma 的 add 方法
-        # 这会实际将数据写入数据库
-        self.collection.add(
+        # upsert 同时支持首次写入和相同 ID 的更新。
+        self.collection.upsert(
             ids=ids,                    # 唯一标识符列表
             embeddings=embeddings,      # 向量列表
             documents=texts,            # 原始文本列表

@@ -24,8 +24,8 @@ Agent 工具注册表 (Tools) —— V3 新增
 """
 
 # 导入 sys 和 Path，用于把项目根目录加入模块搜索路径
-import sys
 import json
+import sys
 from pathlib import Path
 
 # 把项目根目录加入 sys.path
@@ -133,14 +133,23 @@ def build_tools(rag_pipeline=None, memory=None) -> List:
 
         ⚠️ 安全提示: 这个工具会真实执行代码，仅供个人本地学习使用。
         """
+        # 默认关闭任意代码执行。只有明确设置环境变量后才允许本地学习环境启用。
+        import os
+
+        if os.getenv("ENABLE_UNSAFE_PYTHON_TOOL", "0") != "1":
+            return (
+                "Python 代码执行工具已禁用。若在隔离的本地学习环境中确需启用，"
+                "请显式设置 ENABLE_UNSAFE_PYTHON_TOOL=1。"
+            )
+
         # ⚠️ 安全警告（给开发者看的）：
         # exec 会执行任意 Python 代码，理论上可以删文件、访问网络等。
         # 本项目是「个人本地学习工具」，用户自己控制输入，所以可接受。
         # 生产环境绝对不能这样做，需要专业沙箱（如 Docker、gVisor）隔离。
 
         # 导入用于捕获 print 输出的工具
-        import io
         import contextlib
+        import io
 
         # 创建一个「字符串缓冲区」，把 print 的内容写到这里而不是屏幕
         output_buffer = io.StringIO()
