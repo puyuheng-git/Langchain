@@ -80,6 +80,7 @@ def test_standard_daily_report_calculates_authoritative_room_metrics() -> None:
         business_date=date(2026, 7, 13),  # 指标沿用来源日报营业日。
         report_id="report_standard",  # 快照可追溯到具体日报编号。
         report_version=1,  # 快照可追溯到具体修订版本。
+        definition_version="1.0",  # 快照声明入住率、ADR 和 RevPAR 口径版本。
         available_rooms=200,  # 可售房合计为二百间。
         rooms_sold=150,  # 已售房合计为一百五十间。
         occupancy_rate=Decimal("75.0"),  # 150/200 对应 75.0%。
@@ -176,6 +177,7 @@ def test_non_numeric_room_value_is_reported_clearly() -> None:
         RoomMetricsCalculator.calculate(report)
 
 
+# parametrize 让同一行为分别验证 NaN 和 Infinity 两种特殊十进制值。
 @pytest.mark.parametrize("value", ["NaN", "Infinity"])
 def test_non_finite_room_value_is_reported_clearly(value: str) -> None:
     """NaN 和无穷值不能作为客房权威指标输入。
@@ -209,23 +211,42 @@ def test_non_finite_room_value_is_reported_clearly(value: str) -> None:
         RoomMetricsCalculator.calculate(report)
 
 
+# parametrize 用多组不合理数据复用同一阻断行为断言。
 @pytest.mark.parametrize(
     ("record", "message"),
     [
         # 负可售房不可能成为有效酒店库存。
-        ({"available_rooms": "-1", "rooms_sold": "0", "room_revenue": "0"}, "available_rooms 不能为负数: -1"),
+        (
+            {"available_rooms": "-1", "rooms_sold": "0", "room_revenue": "0"},
+            "available_rooms 不能为负数: -1",
+        ),
         # 负已售房说明来源报表或字段映射有误。
-        ({"available_rooms": "200", "rooms_sold": "-1", "room_revenue": "0"}, "rooms_sold 不能为负数: -1"),
+        (
+            {"available_rooms": "200", "rooms_sold": "-1", "room_revenue": "0"},
+            "rooms_sold 不能为负数: -1",
+        ),
         # 负客房收入在首版权威日报口径中必须先核验。
-        ({"available_rooms": "200", "rooms_sold": "1", "room_revenue": "-1"}, "room_revenue 不能为负数: -1"),
+        (
+            {"available_rooms": "200", "rooms_sold": "1", "room_revenue": "-1"},
+            "room_revenue 不能为负数: -1",
+        ),
         # 在营酒店零可售房会让入住率和 RevPAR 失去有效分母。
         ({"available_rooms": "0", "rooms_sold": "0", "room_revenue": "0"}, "可售房必须大于零"),
         # 已售房超过可售库存时先阻断，避免展示超过百分之百的错误入住率。
-        ({"available_rooms": "200", "rooms_sold": "201", "room_revenue": "90000"}, "已售房不能超过可售房: 201 > 200"),
+        (
+            {"available_rooms": "200", "rooms_sold": "201", "room_revenue": "90000"},
+            "已售房不能超过可售房: 201 > 200",
+        ),
         # 可售房必须是完整客房间数，不能被输出时静默截断。
-        ({"available_rooms": "200.5", "rooms_sold": "150", "room_revenue": "90000"}, "available_rooms 必须是整数: 200.5"),
+        (
+            {"available_rooms": "200.5", "rooms_sold": "150", "room_revenue": "90000"},
+            "available_rooms 必须是整数: 200.5",
+        ),
         # 已售房同样不能出现半间房。
-        ({"available_rooms": "200", "rooms_sold": "150.5", "room_revenue": "90000"}, "rooms_sold 必须是整数: 150.5"),
+        (
+            {"available_rooms": "200", "rooms_sold": "150.5", "room_revenue": "90000"},
+            "rooms_sold 必须是整数: 150.5",
+        ),
     ],
 )
 def test_unreasonable_room_values_are_blocked(
@@ -270,12 +291,14 @@ def test_disjoint_room_detail_rows_are_summed_before_rounding() -> None:
         records=[
             {
                 "business_date": "2026-07-16",  # 第一房型营业日。
+                "room_inventory_segment": "标准房",  # 唯一库存分段证明明细不重叠。
                 "available_rooms": "200",  # 第一房型可售房。
                 "rooms_sold": "150",  # 第一房型已售房。
                 "room_revenue": "90000",  # 第一房型客房收入。
             },
             {
                 "business_date": "2026-07-16",  # 第二房型使用相同营业日。
+                "room_inventory_segment": "行政房",  # 第二个唯一库存分段。
                 "available_rooms": "100",  # 第二房型可售房。
                 "rooms_sold": "60",  # 第二房型已售房。
                 "room_revenue": "36001.05",  # 第二房型收入形成舍入边界。
@@ -349,6 +372,7 @@ def test_imported_csv_version_flows_directly_into_room_metrics(tmp_path: Path) -
     )
 
 
+# parametrize 分别验证负数抵消和小数抵消两种逐行校验风险。
 @pytest.mark.parametrize(
     ("second_available", "message"),
     [
@@ -381,12 +405,14 @@ def test_invalid_detail_value_cannot_be_hidden_by_other_rows(
         records=[
             {
                 "business_date": "2026-07-18",  # 第一房型营业日。
+                "room_inventory_segment": "标准房",  # 第一唯一库存分段。
                 "available_rooms": first_available,  # 正数或半间房抵消值。
                 "rooms_sold": "75",  # 第一房型有效已售房。
                 "room_revenue": "45000",  # 第一房型有效收入。
             },
             {
                 "business_date": "2026-07-18",  # 第二房型使用同营业日。
+                "room_inventory_segment": "行政房",  # 第二唯一库存分段。
                 "available_rooms": second_available,  # 注入负数或半间房。
                 "rooms_sold": "0",  # 第二房型已售房保持有效。
                 "room_revenue": "0",  # 第二房型收入保持有效。
@@ -395,5 +421,63 @@ def test_invalid_detail_value_cannot_be_hidden_by_other_rows(
     )
 
     # 即使汇总值表面合法，任一明细错误仍必须阻断计算。
+    with pytest.raises(ValueError, match=message):
+        RoomMetricsCalculator.calculate(report)
+
+
+# parametrize 用三组输入复用同一公共行为断言，避免复制测试流程。
+@pytest.mark.parametrize(
+    ("segments", "message"),
+    [
+        # 多行没有库存分段时无法证明明细互不重叠。
+        ((None, None), "多行日报第1条记录缺少 room_inventory_segment"),
+        # 重复库存分段会让同一房量被累计两次。
+        (("标准房", "标准房"), "room_inventory_segment 不能重复: 标准房"),
+        # 明细中混入合计行会与各房型库存发生重复累计。
+        (("标准房", "合计"), "多行日报不能包含合计行: 合计"),
+    ],
+)
+def test_multi_row_report_requires_unique_non_total_inventory_segments(
+    segments: tuple[str | None, str | None],
+    message: str,
+) -> None:
+    """多行日报必须用唯一库存分段明确表达互不重叠明细。
+
+    Args:
+        segments: 两条客房明细各自提供的库存分段名称。
+        message: 不满足互斥明细约束时应返回的错误。
+
+    Returns:
+        None.
+    """
+
+    # 公共记录允许测试场景省略分段，因此先构造共同权威字段。
+    records: list[dict[str, object]] = [
+        {
+            "business_date": "2026-07-19",  # 第一条明细营业日。
+            "available_rooms": "100",  # 第一条明细可售房。
+            "rooms_sold": "75",  # 第一条明细已售房。
+            "room_revenue": "45000",  # 第一条明细收入。
+        },
+        {
+            "business_date": "2026-07-19",  # 第二条明细营业日。
+            "available_rooms": "100",  # 第二条明细可售房。
+            "rooms_sold": "75",  # 第二条明细已售房。
+            "room_revenue": "45000",  # 第二条明细收入。
+        },
+    ]
+    # 仅在场景提供名称时写入库存分段，覆盖缺失字段行为。
+    for record, segment in zip(records, segments, strict=True):
+        # None 表示来源日报完全没有映射该标准字段。
+        if segment is not None:
+            record["room_inventory_segment"] = segment
+    # 构造多行日报，通过已确认公共接口验证互斥明细约束。
+    report = _report(
+        report_id="report_segments",  # 固定库存分段日报编号。
+        operating_day=date(2026, 7, 19),  # 设置库存分段营业日。
+        records=records,  # 使用两条待验证的客房明细。
+    )
+
+    # 缺失、重复或合计分段都必须在房量汇总前阻断。
     with pytest.raises(ValueError, match=message):
         RoomMetricsCalculator.calculate(report)
