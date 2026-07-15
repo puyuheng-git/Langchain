@@ -435,6 +435,14 @@ def test_invalid_detail_value_cannot_be_hidden_by_other_rows(
         (("标准房", "标准房"), "room_inventory_segment 不能重复: 标准房"),
         # 明细中混入合计行会与各房型库存发生重复累计。
         (("标准房", "合计"), "多行日报不能包含合计行: 合计"),
+        # PMS 也可能使用“小计”标识局部分组汇总。
+        (("标准房", "小计"), "多行日报不能包含合计行: 小计"),
+        # 带业务前缀的中文汇总标签同样不是独立库存。
+        (("标准房", "客房汇总"), "多行日报不能包含合计行: 客房汇总"),
+        # “总合计”虽然不是精确“合计”，仍代表重复汇总行。
+        (("标准房", "总合计"), "多行日报不能包含合计行: 总合计"),
+        # 英文 PMS 常用 Subtotal 表示小计行。
+        (("标准房", "Subtotal"), "多行日报不能包含合计行: Subtotal"),
     ],
 )
 def test_multi_row_report_requires_unique_non_total_inventory_segments(

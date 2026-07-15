@@ -27,8 +27,8 @@ _REQUIRED_ROOM_FIELDS = tuple(_RoomMetricField)
 _ROOM_COUNT_FIELDS = {_RoomMetricField.AVAILABLE_ROOMS, _RoomMetricField.ROOMS_SOLD}
 # 口径版本独立于日报版本，公式或舍入规则改变时必须递增。
 _ROOM_METRICS_DEFINITION_VERSION = "1.0"
-# 常见合计标签统一小写比较，避免把汇总行与房型明细重复累计。
-_TOTAL_SEGMENT_LABELS = {"合计", "总计", "total", "grand total"}
+# 中英文汇总标记用于识别“客房汇总”“Subtotal”等带前后缀标签。
+_TOTAL_SEGMENT_MARKERS = ("合计", "总计", "小计", "汇总", "total", "subtotal", "summary")
 
 
 # dataclass 自动生成不可变结果对象的初始化和比较方法，减少样板代码。
@@ -175,8 +175,10 @@ def _validate_inventory_segments(report: DailyReportVersion) -> None:
         segment = str(row.get("room_inventory_segment", "")).strip()
         if not segment:
             raise ValueError(f"多行日报第{index}条记录缺少 room_inventory_segment")
-        # 常见中英文合计标签必须在进入权威计算前被明确拒绝。
-        if segment.casefold() in _TOTAL_SEGMENT_LABELS:
+        # 压缩英文标签中的重复空格，并统一大小写后检查汇总标记。
+        normalized_segment = " ".join(segment.casefold().split())
+        # 含汇总标记的中英文标签必须在进入权威计算前被拒绝。
+        if any(marker in normalized_segment for marker in _TOTAL_SEGMENT_MARKERS):
             raise ValueError(f"多行日报不能包含合计行: {segment}")
         # 同名分段说明至少有两行可能表达同一批可售房。
         if segment in seen:
