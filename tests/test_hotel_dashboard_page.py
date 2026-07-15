@@ -111,3 +111,61 @@ def test_dashboard_page_displays_data_quality_error_for_total_row(tmp_path: Path
     # 页面必须显示负责人可理解的合计行错误且不渲染误导性指标。
     assert any("多行日报不能包含合计行: 合计" in item.value for item in app.error)
     assert not app.metric
+
+
+def test_dashboard_page_restores_saved_custom_pms_mapping(tmp_path: Path) -> None:
+    """应用重启后选择已保存模板会自动回填自定义 PMS 表头。
+
+    Args:
+        tmp_path: Pytest 为本测试提供的隔离临时目录。
+
+    Returns:
+        None.
+    """
+
+    # 先通过公开服务保存一份不同于页面默认值的真实模板。
+    from enterprise.hotel import (
+        HotelDashboardService,  # 使用与页面相同的应用服务入口。
+        HotelReportUpload,  # 构造一次完整 PMS 日报上传。
+        PmsFieldMapping,  # 表达页面需要恢复的自定义表头。
+    )
+
+    # 创建自定义 PMS 字段映射，证明页面数据来自本地持久化而非默认值。
+    mapping = PmsFieldMapping(
+        business_date="业务日期",  # 自定义营业日表头。
+        available_rooms="房间库存",  # 自定义可售房表头。
+        rooms_sold="出租间夜",  # 自定义已售房表头。
+        room_revenue="房费净收入",  # 自定义客房收入表头。
+    )
+    # 使用隔离目录保存模板和一份有效日报。
+    root = tmp_path / "enterprise"
+    HotelDashboardService(root).import_upload(
+        HotelReportUpload(
+            file_name="custom-pms.csv",  # 模拟 PMS 导出的原始文件名。
+            content=(
+                "业务日期,房间库存,出租间夜,房费净收入\n"
+                "2026-07-20,200,150,90000\n"
+            ).encode(),  # 使用自定义表头构造可验证的 CSV 字节。
+            mapping=mapping,  # 保存负责人首次确认的字段映射。
+            template_name="custom-pms",  # 使用页面可选择的稳定模板名。
+        )
+    )
+
+    # 新建 AppTest 模拟关闭并重新打开应用。
+    app = AppTest.from_function(
+        _render_dashboard_for_test,
+        args=(str(root),),
+    ).run()
+    # 在模板选择器中切换到重启前保存的自定义 PMS 模板。
+    template_select = next(item for item in app.selectbox if item.label == "PMS 模板")
+    template_select.set_value("custom-pms").run()
+
+    # 页面五个字段值必须完整恢复，后续同类文件无需重新映射。
+    values = {item.label: item.value for item in app.text_input}
+    assert values == {
+        "营业日期表头": "业务日期",
+        "客房库存分段表头（多行日报填写）": "",
+        "可售房表头": "房间库存",
+        "已售房表头": "出租间夜",
+        "客房收入表头": "房费净收入",
+    }

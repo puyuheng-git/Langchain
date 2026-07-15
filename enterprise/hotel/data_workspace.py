@@ -147,6 +147,48 @@ class HotelDataWorkspace:
                 (name, _json(normalized), now, now),
             )
 
+    def get_mapping(self, template_name: str) -> dict[str, str] | None:
+        """读取指定模板已保存的“标准字段 → 来源表头”映射。
+
+        Args:
+            template_name: 页面选择或输入的日报模板名称。
+
+        Returns:
+            模板存在时返回字段映射，否则返回 ``None``。
+        """
+
+        # 查询使用清理后的名称，与 save_mapping 的模板主键保持一致。
+        name = template_name.strip()
+        # 空名称不对应任何可恢复模板，直接返回空状态。
+        if not name:
+            return None
+        # 使用短连接读取最新映射，页面重启后无需依赖内存状态。
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT mapping_json FROM hotel_report_mappings WHERE template_name=?",
+                (name,),
+            ).fetchone()
+        # 没有记录时由页面使用首版默认表头。
+        if row is None:
+            return None
+        # JSON 对象恢复成调用方可复用的字符串字典。
+        return json.loads(row["mapping_json"])
+
+    def list_mapping_templates(self) -> list[str]:
+        """按名称返回全部已保存 PMS 日报模板。
+
+        Returns:
+            可供页面选择的模板名称列表。
+        """
+
+        # 名称排序让下拉框在每次启动时保持稳定顺序。
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT template_name FROM hotel_report_mappings ORDER BY template_name"
+            ).fetchall()
+        # SQLite 行转换为普通字符串，避免 UI 依赖数据库类型。
+        return [str(row["template_name"]) for row in rows]
+
     def import_report(
         self, file_path: str | Path, template_name: str
     ) -> DailyReportVersion:
@@ -290,7 +332,8 @@ class HotelDataWorkspace:
             # 部分唯一索引保证此查询最多返回一行。
             row = connection.execute(
                 """SELECT * FROM hotel_report_versions
-                   WHERE template_name=? AND business_date=? AND is_active=1""",
+                   WHERE template_name=? AND business_date=?
+                     AND is_active=1 AND is_valid=1""",
                 (template_name, business_date.isoformat()),
             ).fetchone()
         # 数据库行统一经解码器恢复领域类型。
@@ -320,6 +363,60 @@ class HotelDataWorkspace:
             ).fetchall()
         # 将所有 SQLite 行转换成稳定的公共领域对象。
         return [_decode_report(row) for row in rows]
+
+    def reject_report_version(self, report_id: str) -> None:
+        """停用未通过指标校验的日报，并恢复此前最新有效版本。
+
+        Args:
+            report_id: 已归档但未通过驾驶舱数据质量校验的日报编号。
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: 指定日报编号不存在时抛出。
+        """
+
+        # 生效切换必须使用一个写事务，避免页面刷新看到中间状态。
+        with self._connect() as connection:
+            # 立即写锁保证停用失败版本和恢复旧版本原子完成。
+            connection.execute("BEGIN IMMEDIATE")
+            # 读取失败日报的模板、营业日、版本和当前生效状态。
+            rejected = connection.execute(
+                """SELECT id, template_name, business_date, version, is_active
+                   FROM hotel_report_versions WHERE id=?""",
+                (report_id,),
+            ).fetchone()
+            # 不存在的编号说明调用方状态错误，不能静默忽略。
+            if rejected is None:
+                raise ValueError(f"日报版本不存在: {report_id}")
+            # 无论当前是否生效，都明确标记校验失败并取消生效状态。
+            connection.execute(
+                """UPDATE hotel_report_versions
+                   SET is_active=0, is_valid=0 WHERE id=?""",
+                (report_id,),
+            )
+            # 并发场景中目标已非生效时，不应覆盖后来成功导入的新版本。
+            if not rejected["is_active"]:
+                return
+            # 查找失败版本之前最新的有效历史日报作为恢复候选。
+            previous = connection.execute(
+                """SELECT id FROM hotel_report_versions
+                   WHERE template_name=? AND business_date=?
+                     AND version<? AND is_valid=1
+                   ORDER BY version DESC LIMIT 1""",
+                (
+                    rejected["template_name"],
+                    rejected["business_date"],
+                    rejected["version"],
+                ),
+            ).fetchone()
+            # 首次导入失败时没有旧版本，驾驶舱应保持空状态。
+            if previous is not None:
+                connection.execute(
+                    "UPDATE hotel_report_versions SET is_active=1 WHERE id=?",
+                    (previous["id"],),
+                )
 
     def _connect(self) -> sqlite3.Connection:
         """创建启用字典行和 WAL 模式的短生命周期数据库连接。
@@ -355,12 +452,19 @@ class HotelDataWorkspace:
                        applied_at TEXT NOT NULL
                    )"""
             )
-            # 兼容首个开发版本：它已有业务表但还没有迁移台账。
+            # 兼容早期开发版本：它已有业务表但还没有迁移台账。
             existing_columns = _table_columns(connection, "hotel_report_versions")
             # 仅在检测到旧业务表时推断并登记已经具备的结构版本。
             if existing_columns:
-                # mapping_json 存在表示映射快照迁移已经完成。
-                inferred_version = 2 if "mapping_json" in existing_columns else 1
+                # 有效性列存在表示连续失败版本恢复迁移已经完成。
+                if "is_valid" in existing_columns:
+                    inferred_version = 3
+                # 映射快照列存在表示版本二迁移已经完成。
+                elif "mapping_json" in existing_columns:
+                    inferred_version = 2
+                # 其余早期日报表只具备版本一结构。
+                else:
+                    inferred_version = 1
                 # 补写从一到推断版本的连续迁移记录。
                 for version in range(1, inferred_version + 1):
                     _record_migration(connection, version)
@@ -379,6 +483,10 @@ class HotelDataWorkspace:
             if 2 not in applied:
                 _add_mapping_snapshot(connection)
                 _record_migration(connection, 2)
+            # 版本三标记指标校验结果，避免连续失败时复活无效修订。
+            if 3 not in applied:
+                _add_report_validity_flag(connection)
+                _record_migration(connection, 3)
 
     def _get_mapping(self, template_name: str) -> dict[str, str]:
         """按模板名称读取已保存的标准字段映射。
@@ -393,18 +501,13 @@ class HotelDataWorkspace:
             ValueError: 指定模板尚未保存时抛出。
         """
 
-        # 字段映射较小，按需查询可确保导入使用最新模板。
-        with self._connect() as connection:
-            # 参数化 SQL 避免模板名称影响查询结构。
-            row = connection.execute(
-                "SELECT mapping_json FROM hotel_report_mappings WHERE template_name=?",
-                (template_name,),
-            ).fetchone()
+        # 复用公共读取接口，确保页面恢复和导入使用相同名称清理规则。
+        mapping = self.get_mapping(template_name)
         # 没有模板时禁止猜测字段，避免静默导入错误数据。
-        if not row:
+        if mapping is None:
             raise ValueError(f"尚未保存字段映射: {template_name}")
-        # JSON 对象恢复为公共接口需要的字符串字典。
-        return json.loads(row["mapping_json"])
+        # 返回已经恢复的字符串字典供标准化步骤使用。
+        return mapping
 
 
 def _normalize_report(source: Path, mapping: dict[str, str]) -> _NormalizedDailyReport:
@@ -624,6 +727,23 @@ def _add_mapping_snapshot(connection: sqlite3.Connection) -> None:
                 WHERE mapping.template_name=hotel_report_versions.template_name),
                '{}'
            )"""
+    )
+
+
+def _add_report_validity_flag(connection: sqlite3.Connection) -> None:
+    """应用版本三迁移，为日报版本记录指标校验有效性。
+
+    Args:
+        connection: 已开启迁移事务的 SQLite 连接。
+
+    Returns:
+        None.
+    """
+
+    # 已有版本默认视为有效，保持升级前当前和历史日报的读取行为。
+    connection.execute(
+        """ALTER TABLE hotel_report_versions
+               ADD COLUMN is_valid INTEGER NOT NULL DEFAULT 1"""
     )
 
 

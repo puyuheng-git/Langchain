@@ -21,9 +21,9 @@ from enterprise import EnterpriseStore, ReviewWorkspace
 from enterprise.core.catalog import LEADER_FOCUS, WORKFLOW_GROUPS
 from enterprise.core.knowledge import DEPARTMENTS, DOCUMENT_TYPES
 from enterprise.core.settings import SECRET_SETTING_KEYS, SECURITY_POLICY_OPTIONS
-from enterprise.hotel import HotelDashboardService
+from enterprise.hotel import HotelDashboardService  # 创建本地每日经营驾驶舱服务。
 from enterprise.sample_data import generate_samples
-from enterprise.ui.hotel_dashboard import render_hotel_dashboard
+from enterprise.ui.hotel_dashboard import render_hotel_dashboard  # 渲染酒店默认入口页面。
 
 STRETCH_KWARGS = (
     {"width": "stretch"}
@@ -99,20 +99,21 @@ def main() -> None:
             "导航",
             [
                 # 每日经营驾驶舱排在首位，因此成为 Streamlit 默认页面。
-                "每日经营驾驶舱",
-                "首页",
-                "审计与合同",
-                "人力管理",
-                "行政管理",
-                "财务管理",
-                "知识资料库",
-                "运行监控",
-                "任务中心",
-                "历史与复核",
-                "系统管理",
+                "每日经营驾驶舱",  # 默认进入酒店负责人每日复盘页面。
+                "首页",  # 保留既有企业工作台概览作为次级页面。
+                "审计与合同",  # 进入合同类管理工具箱。
+                "人力管理",  # 进入用工和招聘管理工具箱。
+                "行政管理",  # 进入制度和会议管理工具箱。
+                "财务管理",  # 进入费用和预算管理工具箱。
+                "知识资料库",  # 维护专项分析使用的本地资料。
+                "运行监控",  # 查看操作记录与模型调用状态。
+                "任务中心",  # 查看既有流程生成的待办任务。
+                "历史与复核",  # 查询专项分析案件与人工结论。
+                "系统管理",  # 维护安全、模型和本地数据配置。
             ],
             label_visibility="collapsed",
         )
+        # 侧边栏持续提醒产品的数据边界、使用目标和人工责任。
         st.caption("本地优先 · 十分钟经营闭环 · 人工最终确认")
     # 默认入口只负责编排日报与权威指标，不调用模型生成财务数字。
     if page == "每日经营驾驶舱":
