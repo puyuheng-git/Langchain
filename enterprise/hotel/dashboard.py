@@ -50,6 +50,7 @@ class PmsFieldMapping:
         # 返回普通字典以兼容日报工作空间的稳定公共接口。
         return mapping
 
+    # classmethod 让恢复逻辑通过类本身创建对象，子类也能复用同一入口。
     @classmethod
     def from_dict(cls, mapping: dict[str, str]) -> PmsFieldMapping:
         """从已保存字典恢复强类型 PMS 字段映射。
