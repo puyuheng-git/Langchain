@@ -24,6 +24,9 @@ from enterprise.core.settings import SECRET_SETTING_KEYS, SECURITY_POLICY_OPTION
 from enterprise.hotel import HotelDashboardService  # 创建本地每日经营驾驶舱服务。
 from enterprise.sample_data import generate_samples
 from enterprise.ui.hotel_dashboard import render_hotel_dashboard  # 渲染酒店默认入口页面。
+from enterprise.ui.onboarding import (
+    render_onboarding_tour,  # 在应用启动时接入首次引导和全局重播入口。
+)
 
 STRETCH_KWARGS = (
     {"width": "stretch"}
@@ -112,9 +115,12 @@ def main() -> None:
                 "系统管理",  # 维护安全、模型和本地数据配置。
             ],
             label_visibility="collapsed",
+            key="main_navigation",  # 稳定键允许系统引导快捷按钮切换到真实功能页面。
         )
         # 侧边栏持续提醒产品的数据边界、使用目标和人工责任。
         st.caption("本地优先 · 十分钟经营闭环 · 人工最终确认")
+    # 首次进入自动展示五步引导，并在侧边栏保留随时重播入口。
+    render_onboarding_tour()
     # 默认入口只负责编排日报与权威指标，不调用模型生成财务数字。
     if page == "每日经营驾驶舱":
         render_hotel_dashboard(hotel_dashboard)
