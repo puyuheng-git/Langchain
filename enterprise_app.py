@@ -21,7 +21,9 @@ from enterprise import EnterpriseStore, ReviewWorkspace
 from enterprise.core.catalog import LEADER_FOCUS, WORKFLOW_GROUPS
 from enterprise.core.knowledge import DEPARTMENTS, DOCUMENT_TYPES
 from enterprise.core.settings import SECRET_SETTING_KEYS, SECURITY_POLICY_OPTIONS
+from enterprise.hotel import HotelDashboardService
 from enterprise.sample_data import generate_samples
+from enterprise.ui.hotel_dashboard import render_hotel_dashboard
 
 STRETCH_KWARGS = (
     {"width": "stretch"}
@@ -82,16 +84,22 @@ def apply_theme() -> None:
 def main() -> None:
     """渲染侧边导航和各业务页面。"""
 
-    st.set_page_config(page_title="企业智能管理工作台", page_icon="🏢", layout="wide")
+    # 浏览器标签使用已经确认的酒店负责人个人产品名称。
+    st.set_page_config(page_title="酒店负责人经营工作台", page_icon="🏨", layout="wide")
     apply_theme()
     workspace = get_workspace()
+    # 驾驶舱与原企业流程共用同一本地数据库和归档根目录。
+    hotel_dashboard = HotelDashboardService(workspace.store.root)
     with st.sidebar:
-        st.title("🏢 企业工作台")
+        # 侧边栏突出目标用户，而不是继续使用泛化企业产品名称。
+        st.title("🏨 酒店负责人工作台")
         actor = st.text_input("当前操作人", value=st.session_state.get("actor", "本地用户"))
         st.session_state["actor"] = actor or "本地用户"
         page = st.radio(
             "导航",
             [
+                # 每日经营驾驶舱排在首位，因此成为 Streamlit 默认页面。
+                "每日经营驾驶舱",
                 "首页",
                 "审计与合同",
                 "人力管理",
@@ -105,8 +113,11 @@ def main() -> None:
             ],
             label_visibility="collapsed",
         )
-        st.caption("本地优先 · 全程留痕 · 人工最终确认")
-    if page == "首页":
+        st.caption("本地优先 · 十分钟经营闭环 · 人工最终确认")
+    # 默认入口只负责编排日报与权威指标，不调用模型生成财务数字。
+    if page == "每日经营驾驶舱":
+        render_hotel_dashboard(hotel_dashboard)
+    elif page == "首页":
         page_dashboard(workspace)
     elif page in WORKFLOW_GROUPS:
         page_domain(workspace, page, WORKFLOW_GROUPS[page])
